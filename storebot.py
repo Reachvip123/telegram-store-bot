@@ -342,8 +342,13 @@ def create_styled_qr(qr_data, amount):
 
 def safe_check_payment(md5):
     if khqr:
-        try: return khqr.check_payment(md5)
-        except: return None
+        try: 
+            result = khqr.check_payment(md5)
+            logging.info(f"[KHQR CHECK] MD5={md5}, Result={result}")
+            return result
+        except Exception as e:
+            logging.error(f"[KHQR CHECK] Error checking payment for MD5={md5}: {e}")
+            return None
     return None
 
 def generate_trx_id():
@@ -356,20 +361,34 @@ async def check_payment_loop(update, context, md5_hash, qr_msg_id, pid, vid, qty
     chat_id = update.effective_chat.id
     loop = asyncio.get_running_loop()
     products = load_products()
+    
+    logging.info(f"[PAYMENT CHECK] Started for md5={md5_hash}, qr_msg_id={qr_msg_id}, product={pid}, variant={vid}, qty={qty}")
 
-    for _ in range(24): 
+    for attempt in range(120):  # Check for 10 minutes (120 * 5 seconds)
         try:
             if khqr:
                 response = await loop.run_in_executor(None, safe_check_payment, md5_hash)
+                logging.info(f"[PAYMENT CHECK] Attempt {attempt+1}: Response = {response}")
                 is_paid = False
-                if str(response).strip().upper() == "PAID": is_paid = True
-                elif isinstance(response, dict) and response.get('responseCode') == 0: is_paid = True
+                if str(response).strip().upper() == "PAID": 
+                    is_paid = True
+                    logging.info(f"[PAYMENT CHECK] Payment detected as PAID")
+                elif isinstance(response, dict) and response.get('responseCode') == 0: 
+                    is_paid = True
+                    logging.info(f"[PAYMENT CHECK] Payment confirmed via responseCode=0")
             else:
-                await asyncio.sleep(5); is_paid = True
+                # Testing mode - auto confirm after 5 seconds
+                await asyncio.sleep(5)
+                is_paid = True
+                logging.info(f"[PAYMENT CHECK] Testing mode - auto confirming payment")
 
             if is_paid:
-                try: await context.bot.delete_message(chat_id, qr_msg_id)
-                except: pass
+                logging.info(f"[PAYMENT SUCCESS] Processing confirmed payment")
+                try: 
+                    await context.bot.delete_message(chat_id, qr_msg_id)
+                    logging.info(f"[PAYMENT SUCCESS] QR message deleted")
+                except Exception as e: 
+                    logging.error(f"[PAYMENT SUCCESS] Could not delete QR message: {e}")
 
                 accounts = get_accounts(pid, vid, qty)
                 prod_name = products.get(pid, {}).get('name', 'Unknown')
@@ -414,9 +433,9 @@ async def check_payment_loop(update, context, md5_hash, qr_msg_id, pid, vid, qty
                         acc_text += "\n"
 
                     text = (
-                        "**PAYMENT CONFIRMED** ✅\n"
+                        "[OK] PAYMENT CONFIRMED\n"
                         "Thank you, your payment has been received!\n\n"
-                        "**Order Details:**\n"
+                        "Order Details:\n"
                         "╭ - - - - - - - - - - - - - - - - - - - - - ╮\n"
                         f"┊・Product: {prod_name}\n"
                         f"┊・Variant: {var_name}\n"
@@ -424,19 +443,29 @@ async def check_payment_loop(update, context, md5_hash, qr_msg_id, pid, vid, qty
                         f"┊・Total: ${total:.2f}\n"
                         "╰ - - - - - - - - - - - - - - - - - - - - - ╯\n"
                         f"{acc_text}\n"
-                        f"**Transaction ID:** `{trx_id}`"
+                        f"Transaction ID: `{trx_id}`"
                     )
+                    logging.info(f"[PAYMENT SUCCESS] Accounts found and message prepared")
                 else:
-                    text = f"✅ **PAID**\n⚠️ **OUT OF STOCK!**\nAdmin notified."
-                    await context.bot.send_message(ADMIN_ID, f"⚠️ OOS ALERT: {prod_name} ({qty} pcs) Paid but empty!")
+                    text = f"[OK] PAID\n[ALERT] OUT OF STOCK!\nAdmin notified."
+                    await context.bot.send_message(ADMIN_ID, f"[ALERT] OOS: {prod_name} ({qty} pcs) Paid but empty!")
+                    logging.warning(f"[PAYMENT SUCCESS] Out of stock alert sent to admin")
 
-                await context.bot.send_message(chat_id, text, parse_mode='Markdown', disable_web_page_preview=True)
+                try:
+                    await context.bot.send_message(chat_id, text, parse_mode='Markdown', disable_web_page_preview=True)
+                    logging.info(f"[PAYMENT SUCCESS] Confirmation message sent to user")
+                except Exception as e:
+                    logging.error(f"[PAYMENT SUCCESS] Failed to send confirmation: {e}")
                 return
-        except: pass
+        except Exception as e:
+            logging.error(f"[PAYMENT CHECK] Error in loop: {e}")
         await asyncio.sleep(5)
 
-    try: await context.bot.edit_message_caption(chat_id, qr_msg_id, caption="❌ Expired.")
-    except: pass
+    try: 
+        await context.bot.edit_message_caption(chat_id, qr_msg_id, caption="[EXPIRED] Payment check timeout.")
+        logging.warning(f"[PAYMENT TIMEOUT] No payment received after 10 minutes")
+    except: 
+        pass
 
 # --- 4. UI HANDLERS ---
 

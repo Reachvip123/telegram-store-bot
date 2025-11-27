@@ -1,0 +1,878 @@
+import logging
+import qrcode
+import os
+import asyncio
+import json
+import random
+import string
+from datetime import datetime
+from dotenv import load_dotenv
+from PIL import Image, ImageDraw, ImageFont
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ConversationHandler
+from bakong_khqr import KHQR
+
+# Load environment variables from .env file
+load_dotenv()
+
+# ==========================================
+# 👇 CONFIGURATION (from environment variables)
+# ==========================================
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")   
+BAKONG_TOKEN = os.getenv("BAKONG_TOKEN", "")      
+BAKONG_ACCOUNT = os.getenv("BAKONG_ACCOUNT", "vorn_sovannareach@wing")  
+MERCHANT_NAME = os.getenv("MERCHANT_NAME", "SOVANNAREACH VORN")
+ADMIN_ID = int(os.getenv("ADMIN_ID", "7948968436"))
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "@dzy4u2")
+
+# Validate required tokens
+if not BOT_TOKEN or not BAKONG_TOKEN:
+    raise ValueError("BOT_TOKEN and BAKONG_TOKEN must be set in environment variables!")
+
+# --- DATABASE SETUP (Local JSON fallback or MongoDB) ---
+USE_MONGODB = os.getenv("USE_MONGODB", "false").lower() == "true"
+MONGODB_URI = os.getenv("MONGODB_URI", "")
+
+if USE_MONGODB and MONGODB_URI:
+    from pymongo import MongoClient
+    mongo_client = MongoClient(MONGODB_URI)
+    db = mongo_client['telegram_store_bot']
+    products_collection = db['products']
+    config_collection = db['config']
+    users_collection = db['users']
+    print("✅ Connected to MongoDB")
+else:
+    # Local file storage fallback
+    DB_FOLDER = "database"
+    if not os.path.exists(DB_FOLDER):
+        os.makedirs(DB_FOLDER)
+    PRODUCTS_FILE = f"{DB_FOLDER}/products.json"
+    CONFIG_FILE = f"{DB_FOLDER}/config.json"
+    USERS_FILE = f"{DB_FOLDER}/users.json"
+    products_collection = None
+    print("✅ Using local file storage")
+
+TEMPLATE_FILE = "template.png" # Keep in root folder for easy access
+
+# STATES
+SELECT_PROD, SELECT_VAR, INPUT_STOCK = range(3)
+# ==========================================
+
+logging.basicConfig(level=logging.INFO)
+try:
+    khqr = KHQR(BAKONG_TOKEN) 
+except:
+    khqr = None 
+
+# --- 1. DATA MANAGERS ---
+
+def load_products():
+    try:
+        if not os.path.exists(PRODUCTS_FILE):
+            data = {
+                "1": {
+                    "name": "CAPCUT PRO",
+                    "desc": "Premium Video Editor",
+                    "sold": 0,
+                    "variants": {"1M": {"name": "1 Month", "price": 0.01}}
+                }
+            }
+            with open(PRODUCTS_FILE, 'w') as f:
+                json.dump(data, f, indent=2)
+            
+            # Create dummy stock
+            stock_path = f"{DB_FOLDER}/stock_1_1M.txt"
+            if not os.path.exists(stock_path):
+                with open(stock_path, "w") as f:
+                    f.write("user: test@gmail.com | pass: 123456\n" * 5)
+            return data
+        
+        with open(PRODUCTS_FILE, 'r') as f:
+            return json.load(f)
+    except Exception as e:
+        logging.error(f"Error loading products: {e}")
+        return {}
+
+def save_products(data):
+    try:
+        with open(PRODUCTS_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logging.error(f"Error saving products: {e}")
+
+def get_config(key):
+    defaults = {
+        "welcome": "default", 
+        "banner_welcome": None, 
+        "banner_products": None
+    }
+    
+    try:
+        if not os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, 'w') as f:
+                json.dump(defaults, f, indent=2)
+            return defaults.get(key)
+        
+        with open(CONFIG_FILE, 'r') as f:
+            data = json.load(f)
+            return data.get(key, defaults.get(key))
+    except Exception as e:
+        logging.error(f"Error reading config: {e}")
+        return defaults.get(key)
+
+def update_config(key, value):
+    try:
+        config = {}
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, 'r') as f:
+                    config = json.load(f)
+            except Exception as e:
+                logging.warning(f"Could not read config file: {e}")
+        config[key] = value
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(config, f, indent=2)
+    except Exception as e:
+        logging.error(f"Error updating config: {e}")
+
+def get_user_data(user_id):
+    try:
+        users = {}
+        if os.path.exists(USERS_FILE):
+            try:
+                with open(USERS_FILE, 'r') as f:
+                    users = json.load(f)
+            except Exception as e:
+                logging.warning(f"Could not read users file: {e}")
+        
+        uid = str(user_id)
+        if uid not in users:
+            users[uid] = {"username": "Unknown", "spent": 0.0, "joined": str(datetime.now())}
+            with open(USERS_FILE, 'w') as f:
+                json.dump(users, f, indent=2)
+        return users[uid]
+    except Exception as e:
+        logging.error(f"Error getting user data: {e}")
+        return {"username": "Unknown", "spent": 0.0, "joined": str(datetime.now())}
+
+def update_user_spent(user_id, amount, username):
+    try:
+        users = {}
+        if os.path.exists(USERS_FILE):
+            try:
+                with open(USERS_FILE, 'r') as f:
+                    users = json.load(f)
+            except Exception as e:
+                logging.warning(f"Could not read users file: {e}")
+        
+        uid = str(user_id)
+        if uid not in users:
+            users[uid] = {"spent": 0.0, "joined": str(datetime.now())}
+        
+        users[uid]["spent"] += amount
+        users[uid]["username"] = username
+        
+        with open(USERS_FILE, 'w') as f:
+            json.dump(users, f, indent=2)
+    except Exception as e:
+        logging.error(f"Error updating user spent: {e}")
+
+def get_total_users():
+    if not os.path.exists(USERS_FILE): return 0
+    try:
+        with open(USERS_FILE, 'r') as f:
+            return len(json.load(f))
+    except:
+        return 0
+
+def get_all_users():
+    if not os.path.exists(USERS_FILE): return []
+    try:
+        with open(USERS_FILE, 'r') as f:
+            users = json.load(f)
+            return [int(uid) for uid in users.keys()]
+    except:
+        return []
+
+def get_total_sold():
+    products = load_products()
+    total = 0
+    for p in products.values():
+        total += p.get('sold', 0)
+    return total
+
+# --- STOCK SYSTEM ---
+def get_stock_file(pid, vid):
+    safe_vid = str(vid).replace(" ", "").upper()
+    return f"{DB_FOLDER}/stock_{pid}_{safe_vid}.txt"
+
+def get_stock_count(pid, vid):
+    try:
+        filename = get_stock_file(pid, vid)
+        if not os.path.exists(filename): return 0
+        with open(filename, "r") as f:
+            lines = [l for l in f.readlines() if l.strip()]
+        return len(lines)
+    except Exception as e:
+        logging.error(f"Error getting stock count: {e}")
+        return 0
+
+def add_stock(pid, vid, content):
+    try:
+        filename = get_stock_file(pid, vid)
+        with open(filename, "a") as f:
+            f.write(f"{content}\n")
+    except Exception as e:
+        logging.error(f"Error adding stock: {e}")
+
+def clear_stock(pid, vid):
+    filename = get_stock_file(pid, vid)
+    if os.path.exists(filename):
+        os.remove(filename)
+
+def get_accounts(pid, vid, qty):
+    try:
+        filename = get_stock_file(pid, vid)
+        if not os.path.exists(filename): return None
+        with open(filename, "r") as f:
+            lines = f.readlines()
+        
+        valid = [l for l in lines if l.strip()]
+        if len(valid) < qty: return None
+        
+        accounts = [line.strip() for line in valid[:qty]]
+        
+        with open(filename, "w") as f:
+            f.writelines(valid[qty:])
+        return accounts
+    except Exception as e:
+        logging.error(f"Error getting accounts: {e}")
+        return None
+
+def delete_product_files(pid):
+    products = load_products()
+    if pid in products:
+        for vid in products[pid]['variants']:
+            fname = get_stock_file(pid, vid)
+            if os.path.exists(fname):
+                os.remove(fname)
+
+def reindex_products():
+    products = load_products()
+    new_products = {}
+    sorted_keys = sorted(products.keys(), key=lambda x: int(x))
+    
+    moves = []
+    for i, old_id in enumerate(sorted_keys, 1):
+        new_id = str(i)
+        new_products[new_id] = products[old_id]
+        if old_id != new_id:
+            for vid in products[old_id]['variants']:
+                moves.append((old_id, new_id, vid))
+    
+    for old_id, new_id, vid in moves:
+        old_f = get_stock_file(old_id, vid)
+        new_f = get_stock_file(new_id, vid)
+        if os.path.exists(old_f):
+            try:
+                with open(old_f, 'r') as f: content = f.read()
+                with open(new_f, 'w') as f: f.write(content)
+                os.remove(old_f)
+            except: pass
+            
+    save_products(new_products)
+
+# --- 2. QR GENERATOR ---
+def generate_qr_data(amount):
+    if khqr:
+        qr_code = khqr.create_qr(
+            bank_account=BAKONG_ACCOUNT, merchant_name=MERCHANT_NAME, merchant_city="PP",
+            amount=amount, currency="USD", store_label="Store", phone_number="85512345678",
+            bill_number=f"INV-{int(amount*1000)}", terminal_label="Bot01"
+        )
+        md5 = khqr.generate_md5(qr_code)
+        return qr_code, md5
+    
+    return f"https://bakong.nbc.gov.kh/pay?amount={amount}", "test_md5_hash"
+
+def create_styled_qr(qr_data, amount):
+    possible_paths = [TEMPLATE_FILE, f"/storage/emulated/0/Download/{TEMPLATE_FILE}"]
+    found_path = None
+    for p in possible_paths:
+        if os.path.exists(p): found_path = p; break
+    
+    if not found_path:
+        img = qrcode.make(qr_data); fname = f"qr_{random.randint(1000,9999)}.png"; img.save(fname); return fname
+
+    try:
+        card = Image.open(found_path).convert("RGBA")
+        W, H = card.size
+        qr = qrcode.QRCode(box_size=20, border=0) 
+        qr.add_data(qr_data); qr.make(fit=True)
+        qr_img = qr.make_image(fill_color="#107c42", back_color="white").convert("RGBA")
+        
+        qr_target_size = int(W * 0.55)
+        qr_img = qr_img.resize((qr_target_size, qr_target_size), Image.LANCZOS) 
+        pos_x = (W - qr_target_size) // 2; pos_y = (H - qr_target_size) // 2
+        card.paste(qr_img, (pos_x, pos_y))
+        
+        draw = ImageDraw.Draw(card)
+        try: font = ImageFont.truetype("/system/fonts/Roboto-Bold.ttf", 60)
+        except: font = ImageFont.load_default()
+            
+        text = f"${amount:.2f}"
+        bbox = draw.textbbox((0, 0), text, font=font)
+        text_w = bbox[2] - bbox[0]
+        text_x = (W - text_w) // 2
+        text_y = pos_y + qr_target_size + 30
+        
+        for off in [(-2,-2), (-2,2), (2,-2), (2,2)]:
+            draw.text((text_x+off[0], text_y+off[1]), text, font=font, fill="black")
+        draw.text((text_x, text_y), text, font=font, fill="white")
+        
+        filename = f"qr_card_{random.randint(1000,9999)}.png"
+        card.save(filename) 
+        return filename
+    except Exception as e:
+        print(f"QR Error: {e}")
+        img = qrcode.make(qr_data)
+        fname = f"qr_basic_{random.randint(1000,9999)}.png"
+        img.save(fname)
+        return fname
+
+def safe_check_payment(md5):
+    if khqr:
+        try: return khqr.check_payment(md5)
+        except: return None
+    return None
+
+def generate_trx_id():
+    date_str = datetime.now().strftime("%d%m%Y")
+    random_str = ''.join(random.choices(string.ascii_uppercase, k=5))
+    return f"DZPREM-{date_str}-{random_str}"
+
+# --- 3. BACKGROUND PAYMENT LOOP ---
+async def check_payment_loop(update, context, md5_hash, qr_msg_id, pid, vid, qty):
+    chat_id = update.effective_chat.id
+    loop = asyncio.get_running_loop()
+    products = load_products()
+
+    for _ in range(24): 
+        try:
+            if khqr:
+                response = await loop.run_in_executor(None, safe_check_payment, md5_hash)
+                is_paid = False
+                if str(response).strip().upper() == "PAID": is_paid = True
+                elif isinstance(response, dict) and response.get('responseCode') == 0: is_paid = True
+            else:
+                await asyncio.sleep(5); is_paid = True
+
+            if is_paid:
+                try: await context.bot.delete_message(chat_id, qr_msg_id)
+                except: pass
+
+                accounts = get_accounts(pid, vid, qty)
+                prod_name = products.get(pid, {}).get('name', 'Unknown')
+                var_name = products.get(pid, {}).get('variants', {}).get(vid, {}).get('name', 'Unknown')
+                price = products.get(pid, {}).get('variants', {}).get(vid, {}).get('price', 0)
+                total = price * qty
+                trx_id = generate_trx_id()
+
+                if accounts:
+                    update_user_spent(chat_id, total, update.effective_user.username)
+                    if pid in products:
+                        products[pid]['sold'] = products[pid].get('sold', 0) + qty
+                        save_products(products)
+
+                    acc_text = ""
+                    # Build detailed account text with multiple info lines and optional tutorial link
+                    tutorial_url = products.get(pid, {}).get('variants', {}).get(vid, {}).get('tutorial')
+                    for i, acc in enumerate(accounts):
+                        acc_text += f"\n📦 Item Details\n"
+                        if "," in acc:
+                            parts = [p.strip() for p in acc.split(",")]
+                            u = parts[0] if len(parts) > 0 else "N/A"
+                            p = parts[1] if len(parts) > 1 else "N/A"
+                            details_parts = parts[2:]
+                        else:
+                            parts = [acc.strip()]
+                            u = parts[0]
+                            p = "N/A"
+                            details_parts = []
+
+                        acc_text += f"💌 : `{u}`\n"
+                        acc_text += f"🔑 : `{p}`\n\n"
+                        if details_parts:
+                            acc_text += "More Info ...\n"
+                            # each detail part on its own line
+                            acc_text += "\n".join(details_parts) + "\n\n"
+
+                        # Add tutorial link if set for this variant
+                        if tutorial_url:
+                            # Markdown link
+                            acc_text += f"[Tutorial Sign In]({tutorial_url})\n"
+                        acc_text += "\n"
+
+                    text = (
+                        "**PAYMENT CONFIRMED** ✅\n"
+                        "Thank you, your payment has been received!\n\n"
+                        "**Order Details:**\n"
+                        "╭ - - - - - - - - - - - - - - - - - - - - - ╮\n"
+                        f"┊・Product: {prod_name}\n"
+                        f"┊・Variant: {var_name}\n"
+                        f"┊・Quantity: x{qty}\n"
+                        f"┊・Total: ${total:.2f}\n"
+                        "╰ - - - - - - - - - - - - - - - - - - - - - ╯\n"
+                        f"{acc_text}\n"
+                        f"**Transaction ID:** `{trx_id}`"
+                    )
+                else:
+                    text = f"✅ **PAID**\n⚠️ **OUT OF STOCK!**\nAdmin notified."
+                    await context.bot.send_message(ADMIN_ID, f"⚠️ OOS ALERT: {prod_name} ({qty} pcs) Paid but empty!")
+
+                await context.bot.send_message(chat_id, text, parse_mode='Markdown', disable_web_page_preview=True)
+                return
+        except: pass
+        await asyncio.sleep(5)
+
+    try: await context.bot.edit_message_caption(chat_id, qr_msg_id, caption="❌ Expired.")
+    except: pass
+
+# --- 4. UI HANDLERS ---
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_data = get_user_data(user.id)
+    
+    now = datetime.now().strftime("%A, %d %B %Y %H:%M:%S")
+    sold = get_total_sold()
+    total_users = get_total_users()
+    
+    raw_welcome = get_config("welcome")
+    if raw_welcome == "default":
+         welcome_text = (
+            f"Hello {user.first_name} 👋🏼\n"
+            f"{now}\n\n"
+            "**User Info :**\n"
+            f"└ ID : `{user.id}`\n"
+            f"└ Username : @{user.username}\n"
+            f"└ Transactions : ${user_data['spent']:.2f}\n\n"
+            "**BOT Stats :**\n"
+            f"└ Sold : {sold:,} pcs\n"
+            f"└ Total Users : {total_users:,}\n\n"
+            "**Shortcuts :**\n"
+            "/start – Start bot\n"
+            "/stock – Check product stock\n"
+            "/help – how to use bot"
+        )
+    else:
+        welcome_text = raw_welcome.replace("{name}", user.first_name)
+
+    keyboard = [["🛍 List Products", "👤 My Profile"], ["❓ Help", "📦 Check Stock"]]
+    if user.id == ADMIN_ID: keyboard.append(["🛠 Admin Panel"])
+    markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    
+    banner = get_config("banner_welcome")
+    if banner:
+        try: await update.message.reply_photo(banner, caption=welcome_text, reply_markup=markup, parse_mode='Markdown')
+        except: await update.message.reply_text(welcome_text, reply_markup=markup, parse_mode='Markdown')
+    else:
+        await update.message.reply_text(welcome_text, reply_markup=markup, parse_mode='Markdown')
+
+async def show_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    products = load_products()
+    list_text = "╭ - - - - - - - - - - - - - - - - - - - ╮\n┊  **PRODUCT LIST**\n┊  _page 1 / 1_\n┊- - - - - - - - - - - - - - - - - - - - -\n"
+    keyboard = []; row = []
+    
+    sorted_pids = sorted(products.keys(), key=lambda x: int(x))
+
+    for pid in sorted_pids:
+        data = products[pid]
+        list_text += f"┊ [{pid}] {data['name'].upper()}\n"
+        row.append(InlineKeyboardButton(f"{pid}", callback_data=f"view_{pid}"))
+        if len(row) == 4: keyboard.append(row); row = []
+    if row: keyboard.append(row)
+    list_text += "╰ - - - - - - - - - - - - - - - - - - - ╯"
+    markup = InlineKeyboardMarkup(keyboard)
+    
+    banner = get_config("banner_products")
+    if banner:
+        try: await update.message.reply_photo(banner, caption=list_text, reply_markup=markup, parse_mode='Markdown')
+        except: await update.message.reply_text(list_text, reply_markup=markup, parse_mode='Markdown')
+    else: await update.message.reply_text(list_text, reply_markup=markup, parse_mode='Markdown')
+
+async def show_stock_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    products = load_products()
+    msg = "**PRODUCT STOCK REPORT**\n╭ - - - - - - - - - - - - - - - - - - - - - ╮\n"
+    has = False
+    for pid in sorted(products.keys(), key=lambda x: int(x)):
+        p = products[pid]
+        for vid, v in p['variants'].items():
+            count = get_stock_count(pid, vid); icon = "✅" if count > 0 else "❌"
+            msg += f"┊ {icon} {p['name']} {v['name']} : {count}x\n"; has = True
+    if not has: msg += "┊ No products.\n"
+    msg += "╰ - - - - - - - - - - - - - - - - - - - - - ╯"
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def show_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"For assistance, please contact admin: {ADMIN_USERNAME}")
+
+async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer() 
+    callback_data = query.data
+    logging.info(f"Button clicked: {callback_data}")
+    
+    if callback_data.startswith("stock"): 
+        logging.info("Stock action detected, returning")
+        return 
+
+    products = load_products()
+    
+    # Parse the callback data
+    if callback_data == "back_list":
+        action = "back_list"
+        data = []
+    else:
+        data = callback_data.split("_")
+        action = data[0]
+    
+    logging.info(f"Action: {action}, Data: {data}")
+
+    if action == "view":
+        pid = data[1]
+        if pid not in products: return
+        prod = products[pid]
+        text = f"╭ - - - - - - - - - - - - - - - - - - - ╮\n┊ • **Product:** {prod['name']}\n┊ • **Sold:** {prod['sold']} pcs\n┊ • **Desc:** {prod['desc']}\n╰ - - - - - - - - - - - - - - - - - - - ╯\n╭ - - - - - - - - - - - - - - - - - - - ╮\n┊ **Select Variation:**\n"
+        keyboard = []
+        if query.from_user.id == ADMIN_ID:
+             keyboard.append([InlineKeyboardButton("🗑 DELETE PRODUCT", callback_data=f"delprod_{pid}")])
+        for vid, var in prod['variants'].items():
+            stock = get_stock_count(pid, vid)
+            status = "🟢" if stock > 0 else "🔴"
+            text += f"┊ • {var['name']} (${var['price']:.2f}) - {status}\n"
+            row = [InlineKeyboardButton(f"{var['name']} - ${var['price']:.2f}", callback_data=f"confirm_{pid}_{vid}_1")]
+            if query.from_user.id == ADMIN_ID:
+                row.append(InlineKeyboardButton("🗑", callback_data=f"delvar_{pid}_{vid}"))
+            keyboard.append(row)
+        text += "╰ - - - - - - - - - - - - - - - - - - - ╯"
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back_list")])
+        markup = InlineKeyboardMarkup(keyboard)
+        try:
+            if query.message.photo: await query.edit_message_caption(caption=text, reply_markup=markup, parse_mode='Markdown')
+            else: await query.edit_message_text(text=text, reply_markup=markup, parse_mode='Markdown')
+        except: await query.message.reply_text(text, reply_markup=markup, parse_mode='Markdown')
+    elif action == "tutorial":
+        # Admin interactive: set tutorial link for a specific product variant
+        if query.from_user.id != ADMIN_ID: return
+        if len(data) < 3: return
+        pid = data[1]
+        vid = data[2]
+        context.user_data['tutorial_pid'] = pid
+        context.user_data['tutorial_vid'] = vid
+        try:
+            await query.message.reply_text(f"Send the tutorial link (URL) for product {pid} variant {vid} now.")
+        except:
+            pass
+
+    elif action == "back_list":
+        products = load_products()
+        list_text = "╭ - - - - - - - - - - - - - - - - - - - ╮\n┊  **PRODUCT LIST**\n┊  _page 1 / 1_\n┊- - - - - - - - - - - - - - - - - - - - -\n"
+        keyboard = []; row = []
+        
+        sorted_pids = sorted(products.keys(), key=lambda x: int(x))
+
+        for pid in sorted_pids:
+            prod_data = products[pid]
+            list_text += f"┊ [{pid}] {prod_data['name'].upper()}\n"
+            row.append(InlineKeyboardButton(f"{pid}", callback_data=f"view_{pid}"))
+            if len(row) == 4: keyboard.append(row); row = []
+        if row: keyboard.append(row)
+        list_text += "╰ - - - - - - - - - - - - - - - - - - - ╯"
+        markup = InlineKeyboardMarkup(keyboard)
+        
+        try:
+            if query.message.photo:
+                await query.edit_message_caption(caption=list_text, reply_markup=markup, parse_mode='Markdown')
+            else:
+                await query.edit_message_text(text=list_text, reply_markup=markup, parse_mode='Markdown')
+        except Exception as e:
+            logging.error(f"Error editing message: {e}")
+            await query.message.reply_text(list_text, reply_markup=markup, parse_mode='Markdown')
+
+    elif action == "confirm":
+        if len(data) < 4: return
+        pid, vid, qty = data[1], data[2], int(data[3])
+        prod = products[pid]; var = prod['variants'][vid]; stock = get_stock_count(pid, vid)
+        
+        if qty > stock and stock > 0:
+             await query.answer(f"⚠️ Max available is {stock}", show_alert=True)
+             qty = stock
+        if qty < 1:
+             await query.answer("⚠️ Minimum 1", show_alert=True)
+             qty = 1
+
+        total = var['price'] * qty
+        text = f"**ORDER CONFIRMATION** 🛒\n╭ - - - - - - - - - - - - - - - - - - - - - ╮\n┊・Product: {prod['name']}\n┊・Variation: {var['name']}\n┊・Unit Price: ${var['price']:.2f}\n┊・Available Stock: {stock}\n┊ - - - - - - - - - - - - - - - - - - - - - \n┊・Order Quantity: x{qty}\n┊・Total Payment: ${total:.2f}\n╰ - - - - - - - - - - - - - - - - - - - - - ╯"
+        minus = max(1, qty - 1); plus = min(stock, qty + 1) if stock > 0 else qty + 1
+        keyboard = [
+            [InlineKeyboardButton(f"- 1", callback_data=f"confirm_{pid}_{vid}_{minus}"), InlineKeyboardButton(f"+ 1", callback_data=f"confirm_{pid}_{vid}_{plus}")],
+            [InlineKeyboardButton(f"✅ Pay with KHQR (${total:.2f})", callback_data=f"pay_{pid}_{vid}_{qty}")],
+            [InlineKeyboardButton("🔙 Back", callback_data=f"view_{pid}"), InlineKeyboardButton("🔄 Refresh", callback_data=f"confirm_{pid}_{vid}_{qty}")]
+        ]
+        try:
+            if query.message.photo: await query.edit_message_caption(caption=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+            else: await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        except: pass
+
+    elif action == "cancel":
+        try: await query.message.delete(); await context.bot.send_message(query.message.chat_id, "❌ Order Cancelled.", parse_mode='Markdown')
+        except: pass
+
+    elif action == "pay":
+        if len(data) < 4: return
+        pid, vid, qty = data[1], data[2], int(data[3])
+        prod = products[pid]; var = prod['variants'][vid]; total = var['price'] * qty
+        if get_stock_count(pid, vid) < qty:
+            await query.message.reply_text("❌ **Sold Out!** Please check back later.", parse_mode='Markdown'); return
+        
+        await query.message.reply_text(f"⏳ Generating KHQR...")
+        qr_text, md5 = generate_qr_data(total)
+        filename = create_styled_qr(qr_text, total)
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel Transaction", callback_data="cancel")]])
+        msg = await query.message.reply_photo(photo=open(filename, 'rb'), caption=f"💳 **Pay ${total:.2f}**\nItem: {prod['name']} x{qty}\n\n_Scanning payment..._",
+            parse_mode='Markdown', reply_markup=markup)
+        os.remove(filename)
+        asyncio.create_task(check_payment_loop(update, context, md5, msg.message_id, pid, vid, qty))
+
+    elif action == "delprod":
+        pid = data[1]
+        if query.from_user.id != ADMIN_ID: return
+        delete_product_files(pid); del products[pid]; reindex_products()
+        await query.message.delete(); await context.bot.send_message(query.message.chat_id, f"🗑 Product {pid} Deleted."); await show_products(update, context)
+
+    elif action == "delvar":
+        pid, vid = data[1], data[2]
+        if query.from_user.id != ADMIN_ID: return
+        if pid in products and vid in products[pid]['variants']:
+            clear_stock(pid, vid); del products[pid]['variants'][vid]; save_products(products)
+            await context.bot.send_message(query.message.chat_id, f"🗑 Variant {vid} Deleted."); await show_products(update, context)
+
+# --- 5. ADMIN LOGIC ---
+
+async def start_add_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return ConversationHandler.END
+    products = load_products()
+    if not products: await update.message.reply_text("❌ No products."); return ConversationHandler.END
+    keyboard = []
+    for pid in sorted(products.keys(), key=lambda x: int(x)):
+        p = products[pid]
+        keyboard.append([InlineKeyboardButton(p['name'], callback_data=f"stock_prod_{pid}")])
+    keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="stock_cancel")])
+    await update.message.reply_text("📦 **Select Product:**", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    return SELECT_PROD
+
+async def select_product_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query; await query.answer()
+    if query.data == "stock_cancel": await query.message.edit_text("❌ Cancelled."); return ConversationHandler.END
+    pid = query.data.split("_")[2]
+    context.user_data['stock_pid'] = pid
+    products = load_products(); prod = products[pid]
+    keyboard = []
+    for vid, var in prod['variants'].items():
+        keyboard.append([InlineKeyboardButton(f"{var['name']}", callback_data=f"stock_var_{vid}")])
+    keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="stock_cancel")])
+    await query.message.edit_text(f"📦 **{prod['name']}**\nSelect Variant:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    return SELECT_VAR
+
+async def select_variant_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query; await query.answer()
+    if query.data == "stock_cancel": await query.message.edit_text("❌ Cancelled."); return ConversationHandler.END
+    vid = query.data.split("_")[2]
+    context.user_data['stock_vid'] = vid
+    pid = context.user_data['stock_pid']
+    await query.message.edit_text(f"📥 Send data for this variant now.\nFormat: `email,pass,info`\n(Send multiple lines to add multiple)", parse_mode='Markdown')
+    return INPUT_STOCK
+
+async def receive_stock_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pid = context.user_data.get('stock_pid')
+    vid = context.user_data.get('stock_vid')
+    text = update.message.text
+    lines = text.split('\n'); count = 0
+    for line in lines:
+        if line.strip(): add_stock(pid, vid, line.strip()); count += 1
+    await update.message.reply_text(f"✅ **Success!** Added {count} items.", parse_mode='Markdown')
+    return ConversationHandler.END
+
+async def cancel_op(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("❌ Cancelled.")
+    return ConversationHandler.END
+
+async def cmd_add_product_easy(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    try:
+        if not context.args:
+            await update.message.reply_text("⚠️ Usage: `/addpd Name | Variant | Price | Desc`", parse_mode='Markdown')
+            return
+        raw = " ".join(context.args)
+        parts = [p.strip() for p in raw.split("|")]
+        if len(parts) < 4:
+            await update.message.reply_text("⚠️ Usage: `/addpd Name | Variant | Price | Desc`", parse_mode='Markdown')
+            return
+        name, var_name, price_str, desc = parts[0], parts[1], parts[2], parts[3]
+        
+        # Validate inputs
+        if not name or not var_name or not price_str:
+            await update.message.reply_text("❌ All fields are required and cannot be empty.", parse_mode='Markdown')
+            return
+        
+        try:
+            price = float(price_str)
+            if price < 0:
+                await update.message.reply_text("❌ Price cannot be negative.", parse_mode='Markdown')
+                return
+        except ValueError:
+            await update.message.reply_text("❌ Price must be a valid number.", parse_mode='Markdown')
+            return
+        
+        products = load_products()
+        pid = next((k for k, v in products.items() if v['name'].lower() == name.lower()), None)
+        if not pid:
+            pid = str(max([int(k) for k in products.keys()] or [0]) + 1)
+            products[pid] = {"name": name, "desc": desc, "sold": 0, "variants": {}}
+        vid = var_name.replace(" ", "").upper()[:3]
+        products[pid]['variants'][vid] = {"name": var_name, "price": price}
+        save_products(products)
+        await update.message.reply_text(f"✅ Added! **{name}** ({var_name}) - ${price:.2f}", parse_mode='Markdown')
+    except Exception as e:
+        logging.error(f"Error adding product: {e}")
+        await update.message.reply_text(f"❌ Error: {e}")
+
+async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    
+    if not context.args:
+        await update.message.reply_text("⚠️ Usage: `/broadcast <message>`", parse_mode='Markdown')
+        return
+    
+    msg = " ".join(context.args)
+    users = get_all_users()
+    
+    if not users:
+        await update.message.reply_text("ℹ️ No users to broadcast to.")
+        return
+    
+    await update.message.reply_text(f"📢 Sending to {len(users)} users...")
+    success = 0
+    failed = 0
+    
+    for uid in users:
+        try:
+            await context.bot.send_message(uid, f"📢 **NOTICE:**\n{msg}", parse_mode='Markdown')
+            success += 1
+        except Exception as e:
+            logging.warning(f"Failed to send message to {uid}: {e}")
+            failed += 1
+    
+    await update.message.reply_text(f"✅ Done. Sent: {success}, Failed: {failed}")
+
+async def cmd_tutorial(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Start interactive tutorial link setup for a product
+    if update.effective_user.id != ADMIN_ID: return
+    await update.message.reply_text("Enter product id:")
+    context.user_data['await_tutorial_pid'] = True
+
+async def cmd_set_banner_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    try:
+        if not context.args:
+            await update.message.reply_text("⚠️ Usage: `/setbanner_welcome <image_url>`", parse_mode='Markdown')
+            return
+        update_config("banner_welcome", context.args[0])
+        await update.message.reply_text("✅ Welcome Banner Updated!")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+async def cmd_set_banner_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    try:
+        if not context.args:
+            await update.message.reply_text("⚠️ Usage: `/setbanner_products <image_url>`", parse_mode='Markdown')
+            return
+        update_config("banner_products", context.args[0])
+        await update.message.reply_text("✅ Products Banner Updated!")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+
+async def cmd_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    await update.message.reply_text("🛠 **ADMIN MENU**\n\n`/addpd Name | Var | Price | Desc`\n`/addstock` (Interactive)\n`/setbanner_welcome URL`\n`/setbanner_products URL`\n`/broadcast Msg`", parse_mode='Markdown')
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+
+    # Admin flow: awaiting product id for tutorial setup
+    if update.effective_user.id == ADMIN_ID and context.user_data.get('await_tutorial_pid'):
+        pid = text.strip()
+        products = load_products()
+        if pid not in products:
+            await update.message.reply_text("❌ Invalid product id. Try again.")
+            return
+        keyboard = []
+        for vid in products[pid].get('variants', {}).keys():
+            keyboard.append([InlineKeyboardButton(f"{products[pid]['variants'][vid]['name']}", callback_data=f"tutorial_{pid}_{vid}")])
+        keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="tutorial_cancel")])
+        await update.message.reply_text(f"Select variant for product {pid}:", reply_markup=InlineKeyboardMarkup(keyboard))
+        context.user_data.pop('await_tutorial_pid', None)
+        return
+
+    # Admin flow: awaiting tutorial link for selected variant
+    if update.effective_user.id == ADMIN_ID and context.user_data.get('tutorial_pid'):
+        link = text.strip()
+        pid = context.user_data.pop('tutorial_pid', None)
+        vid = context.user_data.pop('tutorial_vid', None)
+        products = load_products()
+        if not pid or pid not in products or vid not in products[pid].get('variants', {}):
+            await update.message.reply_text("❌ Product or variant not found.")
+            return
+        products[pid]['variants'][vid]['tutorial'] = link
+        save_products(products)
+        await update.message.reply_text(f"✅ Tutorial link saved for product {pid} variant {vid}.")
+        return
+
+    # Regular user actions
+    if text == "🛍 List Products": await show_products(update, context)
+    elif text == "👤 My Profile": await start(update, context)
+    elif text == "🛠 Admin Panel": await cmd_admin_menu(update, context)
+    elif text == "❓ Help": await show_help(update, context)
+    elif text == "📦 Check Stock": await show_stock_report(update, context)
+
+if __name__ == '__main__':
+    load_products()
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    
+    stock_conv = ConversationHandler(
+        entry_points=[CommandHandler('addstock', start_add_stock)],
+        states={
+            SELECT_PROD: [CallbackQueryHandler(select_product_callback, pattern="^stock_prod_")],
+            SELECT_VAR: [CallbackQueryHandler(select_variant_callback, pattern="^stock_var_")],
+            INPUT_STOCK: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_stock_data)]
+        },
+        fallbacks=[CommandHandler('cancel', cancel_op), CallbackQueryHandler(select_product_callback, pattern="^stock_cancel$")]
+    )
+
+    application.add_handler(stock_conv)
+    application.add_handler(CommandHandler('start', start))
+    application.add_handler(CommandHandler('admin', cmd_admin_menu))
+    application.add_handler(CommandHandler('addpd', cmd_add_product_easy))
+    application.add_handler(CommandHandler('setbanner_welcome', cmd_set_banner_welcome))
+    application.add_handler(CommandHandler('setbanner_products', cmd_set_banner_products))
+    application.add_handler(CommandHandler('broadcast', cmd_broadcast))
+    application.add_handler(CommandHandler('tutorial', cmd_tutorial))
+    application.add_handler(CommandHandler('stock', show_stock_report))
+    application.add_handler(CommandHandler('help', show_help))
+    application.add_handler(CallbackQueryHandler(button_click))
+    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    
+    print("✅ Store Bot Final V33 Running...")
+    application.run_polling()

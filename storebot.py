@@ -233,20 +233,32 @@ def clear_stock(pid, vid):
 def get_accounts(pid, vid, qty):
     try:
         filename = get_stock_file(pid, vid)
-        if not os.path.exists(filename): return None
+        logging.info(f"[GET ACCOUNTS] Looking for stock file: {filename}")
+        if not os.path.exists(filename):
+            logging.warning(f"[GET ACCOUNTS] Stock file NOT found: {filename}")
+            return None
+        
         with open(filename, "r") as f:
             lines = f.readlines()
         
+        logging.info(f"[GET ACCOUNTS] Stock file has {len(lines)} lines")
         valid = [l for l in lines if l.strip()]
-        if len(valid) < qty: return None
+        logging.info(f"[GET ACCOUNTS] Valid lines after filtering: {len(valid)}")
+        
+        if len(valid) < qty:
+            logging.warning(f"[GET ACCOUNTS] Not enough valid accounts. Need {qty}, have {len(valid)}")
+            return None
         
         accounts = [line.strip() for line in valid[:qty]]
+        logging.info(f"[GET ACCOUNTS] Got {len(accounts)} accounts, remaining: {len(valid) - qty}")
         
         with open(filename, "w") as f:
             f.writelines(valid[qty:])
+        
+        logging.info(f"[GET ACCOUNTS] Successfully returned {len(accounts)} accounts")
         return accounts
     except Exception as e:
-        logging.error(f"Error getting accounts: {e}")
+        logging.error(f"[GET ACCOUNTS] Error getting accounts: {e}")
         return None
 
 def delete_product_files(pid):
@@ -396,8 +408,11 @@ async def check_payment_loop(update, context, md5_hash, qr_msg_id, pid, vid, qty
                 price = products.get(pid, {}).get('variants', {}).get(vid, {}).get('price', 0)
                 total = price * qty
                 trx_id = generate_trx_id()
+                
+                logging.info(f"[PAYMENT SUCCESS] Got accounts: {accounts}")
 
                 if accounts:
+                    logging.info(f"[PAYMENT SUCCESS] Processing {len(accounts)} accounts")
                     update_user_spent(chat_id, total, update.effective_user.username)
                     if pid in products:
                         products[pid]['sold'] = products[pid].get('sold', 0) + qty
@@ -407,7 +422,7 @@ async def check_payment_loop(update, context, md5_hash, qr_msg_id, pid, vid, qty
                     # Build detailed account text with multiple info lines and optional tutorial link
                     tutorial_url = products.get(pid, {}).get('variants', {}).get(vid, {}).get('tutorial')
                     for i, acc in enumerate(accounts):
-                        acc_text += f"\n📦 Item Details\n"
+                        acc_text += f"\nItem Details #{i+1}\n"
                         if "," in acc:
                             parts = [p.strip() for p in acc.split(",")]
                             u = parts[0] if len(parts) > 0 else "N/A"
@@ -419,10 +434,10 @@ async def check_payment_loop(update, context, md5_hash, qr_msg_id, pid, vid, qty
                             p = "N/A"
                             details_parts = []
 
-                        acc_text += f"💌 : `{u}`\n"
-                        acc_text += f"🔑 : `{p}`\n\n"
+                        acc_text += f"Email/Username : `{u}`\n"
+                        acc_text += f"Password : `{p}`\n\n"
                         if details_parts:
-                            acc_text += "More Info ...\n"
+                            acc_text += "Additional Information:\n"
                             # each detail part on its own line
                             acc_text += "\n".join(details_parts) + "\n\n"
 
@@ -436,26 +451,36 @@ async def check_payment_loop(update, context, md5_hash, qr_msg_id, pid, vid, qty
                         "[OK] PAYMENT CONFIRMED\n"
                         "Thank you, your payment has been received!\n\n"
                         "Order Details:\n"
-                        "╭ - - - - - - - - - - - - - - - - - - - - - ╮\n"
-                        f"┊・Product: {prod_name}\n"
-                        f"┊・Variant: {var_name}\n"
-                        f"┊・Quantity: x{qty}\n"
-                        f"┊・Total: ${total:.2f}\n"
-                        "╰ - - - - - - - - - - - - - - - - - - - - - ╯\n"
+                        "= = = = = = = = = = = = = = = = = = = = = =\n"
+                        f"Product: {prod_name}\n"
+                        f"Variant: {var_name}\n"
+                        f"Quantity: x{qty}\n"
+                        f"Total: ${total:.2f}\n"
+                        "= = = = = = = = = = = = = = = = = = = = = =\n"
                         f"{acc_text}\n"
                         f"Transaction ID: `{trx_id}`"
                     )
                     logging.info(f"[PAYMENT SUCCESS] Accounts found and message prepared")
                 else:
+                    logging.warning(f"[PAYMENT SUCCESS] No accounts found! get_accounts returned None")
                     text = f"[OK] PAID\n[ALERT] OUT OF STOCK!\nAdmin notified."
-                    await context.bot.send_message(ADMIN_ID, f"[ALERT] OOS: {prod_name} ({qty} pcs) Paid but empty!")
-                    logging.warning(f"[PAYMENT SUCCESS] Out of stock alert sent to admin")
+                    try:
+                        await context.bot.send_message(ADMIN_ID, f"[ALERT] OOS: {prod_name} ({qty} pcs) Paid but empty!")
+                        logging.info(f"[PAYMENT SUCCESS] Out of stock alert sent to admin")
+                    except Exception as e:
+                        logging.error(f"[PAYMENT SUCCESS] Failed to notify admin: {e}")
 
                 try:
                     await context.bot.send_message(chat_id, text, parse_mode='Markdown', disable_web_page_preview=True)
                     logging.info(f"[PAYMENT SUCCESS] Confirmation message sent to user")
                 except Exception as e:
                     logging.error(f"[PAYMENT SUCCESS] Failed to send confirmation: {e}")
+                    # Try sending without markdown if it fails
+                    try:
+                        await context.bot.send_message(chat_id, text)
+                        logging.info(f"[PAYMENT SUCCESS] Confirmation sent (plain text fallback)")
+                    except Exception as e2:
+                        logging.error(f"[PAYMENT SUCCESS] Failed to send even with fallback: {e2}")
                 return
         except Exception as e:
             logging.error(f"[PAYMENT CHECK] Error in loop: {e}")
@@ -878,7 +903,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 if __name__ == '__main__':
     load_products()
+    
+    # Build application with proper error handling
+    async def error_handler(update, context):
+        """Handle errors in the application."""
+        logging.error(f"[BOT ERROR] Update: {update}", exc_info=context.error)
+    
     application = ApplicationBuilder().token(BOT_TOKEN).build()
+    application.add_error_handler(error_handler)
     
     stock_conv = ConversationHandler(
         entry_points=[CommandHandler('addstock', start_add_stock)],

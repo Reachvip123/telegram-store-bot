@@ -40,7 +40,7 @@ if USE_MONGODB and MONGODB_URI:
     products_collection = db['products']
     config_collection = db['config']
     users_collection = db['users']
-    print("✅ Connected to MongoDB")
+    print("[OK] Connected to MongoDB")
 else:
     # Local file storage fallback
     DB_FOLDER = "database"
@@ -50,7 +50,7 @@ else:
     CONFIG_FILE = f"{DB_FOLDER}/config.json"
     USERS_FILE = f"{DB_FOLDER}/users.json"
     products_collection = None
-    print("✅ Using local file storage")
+    print("[OK] Using local file storage")
 
 TEMPLATE_FILE = "template.png" # Keep in root folder for easy access
 
@@ -874,5 +874,5 @@ if __name__ == '__main__':
     application.add_handler(CallbackQueryHandler(button_click))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     
-    print("✅ Store Bot Final V33 Running...")
+    print("[OK] Store Bot Final V33 Running...")
     application.run_polling()

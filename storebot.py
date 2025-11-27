@@ -503,6 +503,110 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     total_users = get_total_users()
     
     raw_welcome = get_config("welcome")
+
+
+async def cmd_forceconfirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin command: force delivery for testing.
+    Usage: /forceconfirm <pid> <vid> <qty>
+    """
+    try:
+        user_id = update.effective_user.id
+        if user_id != ADMIN_ID:
+            await update.message.reply_text("You are not authorized to use this command.")
+            return
+
+        args = context.args
+        if len(args) < 3:
+            await update.message.reply_text("Usage: /forceconfirm <pid> <vid> <qty>")
+            return
+
+        pid = args[0]
+        vid = args[1]
+        try:
+            qty = int(args[2])
+        except:
+            await update.message.reply_text("Quantity must be a number")
+            return
+
+        products = load_products()
+        if pid not in products:
+            await update.message.reply_text(f"Product {pid} not found")
+            return
+
+        prod = products[pid]
+        var = prod.get('variants', {}).get(vid)
+        if not var:
+            await update.message.reply_text(f"Variant {vid} not found for product {pid}")
+            return
+
+        stock = get_stock_count(pid, vid)
+        if stock < qty:
+            await update.message.reply_text(f"Not enough stock: have {stock}, need {qty}")
+            return
+
+        # Pull accounts and deliver
+        accounts = get_accounts(pid, vid, qty)
+        if not accounts:
+            await update.message.reply_text("No accounts available to deliver")
+            return
+
+        # Update spending and product sold
+        chat_id = update.effective_chat.id
+        total = var.get('price', 0) * qty
+        update_user_spent(chat_id, total, update.effective_user.username)
+        products[pid]['sold'] = products[pid].get('sold', 0) + qty
+        save_products(products)
+
+        # Build message identical to normal delivery
+        acc_text = ""
+        tutorial_url = products.get(pid, {}).get('variants', {}).get(vid, {}).get('tutorial')
+        for i, acc in enumerate(accounts):
+            acc_text += f"\nItem Details #{i+1}\n"
+            if "," in acc:
+                parts = [p.strip() for p in acc.split(",")]
+                u = parts[0] if len(parts) > 0 else "N/A"
+                p = parts[1] if len(parts) > 1 else "N/A"
+                details_parts = parts[2:]
+            else:
+                parts = [acc.strip()]
+                u = parts[0]
+                p = "N/A"
+                details_parts = []
+
+            acc_text += f"Email/Username : `{u}`\n"
+            acc_text += f"Password : `{p}`\n\n"
+            if details_parts:
+                acc_text += "Additional Information:\n"
+                acc_text += "\n".join(details_parts) + "\n\n"
+
+            if tutorial_url:
+                acc_text += f"[Tutorial Sign In]({tutorial_url})\n"
+            acc_text += "\n"
+
+        trx_id = generate_trx_id()
+        text = (
+            "[OK] PAYMENT CONFIRMED (FORCED)\n"
+            "This confirmation was forced by admin for testing.\n\n"
+            "Order Details:\n"
+            "= = = = = = = = = = = = = = = = = = = = = =\n"
+            f"Product: {prod.get('name')}\n"
+            f"Variant: {var.get('name')}\n"
+            f"Quantity: x{qty}\n"
+            f"Total: ${total:.2f}\n"
+            "= = = = = = = = = = = = = = = = = = = = = =\n"
+            f"{acc_text}\n"
+            f"Transaction ID: `{trx_id}`"
+        )
+
+        await update.message.reply_text("Forced delivery complete. Sending confirmation...")
+        await context.bot.send_message(chat_id, text, parse_mode='Markdown', disable_web_page_preview=True)
+        logging.info(f"[FORCECONFIRM] Delivered {qty} items for product {pid} variant {vid} to chat {chat_id}")
+    except Exception as e:
+        logging.error(f"[FORCECONFIRM] Error: {e}")
+        try:
+            await update.message.reply_text(f"Error forcing confirm: {e}")
+        except:
+            pass
     if raw_welcome == "default":
          welcome_text = (
             f"Hello {user.first_name} 👋🏼\n"
@@ -932,6 +1036,7 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler('tutorial', cmd_tutorial))
     application.add_handler(CommandHandler('stock', show_stock_report))
     application.add_handler(CommandHandler('help', show_help))
+    application.add_handler(CommandHandler('forceconfirm', cmd_forceconfirm))
     application.add_handler(CallbackQueryHandler(button_click))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     

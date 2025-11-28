@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Stock Management - Store Bot Admin</title>
+    <style>
+        body { font-family: Arial; margin: 0; background: #f8f9fa; }
+        .header { background: #007bff; color: white; padding: 1rem; }
+        .nav { display: flex; gap: 20px; margin-top: 10px; }
+        .nav a { color: white; text-decoration: none; padding: 8px 12px; border-radius: 4px; }
+        .nav a:hover { background: rgba(255,255,255,0.2); }
+        .nav a.active { background: rgba(255,255,255,0.3); }
+        .container { max-width: 1200px; margin: 0 auto; padding: 20px; }
+        .stock-section { background: white; margin-bottom: 30px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .stock-header { background: #f8f9fa; padding: 15px 20px; border-radius: 8px 8px 0 0; border-bottom: 1px solid #dee2e6; }
+        .stock-content { padding: 20px; }
+        .stock-form { background: #e3f2fd; padding: 15px; border-radius: 5px; margin-top: 15px; }
+        .form-group { margin-bottom: 15px; }
+        label { display: block; font-weight: bold; margin-bottom: 5px; }
+        input, textarea, select { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; box-sizing: border-box; }
+        textarea { height: 100px; }
+        .btn { background: #28a745; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; }
+        .btn:hover { background: #218838; }
+        .btn-danger { background: #dc3545; }
+        .btn-danger:hover { background: #c82333; }
+        .stock-items { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin-top: 15px; }
+        .stock-item { background: #f8f9fa; padding: 10px; border-radius: 4px; border-left: 4px solid #28a745; position: relative; }
+        .stock-item .delete-btn { position: absolute; top: 5px; right: 5px; background: #dc3545; color: white; border: none; border-radius: 3px; padding: 2px 6px; font-size: 0.7em; cursor: pointer; }
+        .stock-count { display: inline-block; background: #17a2b8; color: white; padding: 2px 8px; border-radius: 12px; font-size: 0.8em; margin-left: 10px; }
+        .stock-count.low { background: #ffc107; color: #212529; }
+        .stock-count.out { background: #dc3545; }
+        .product-info { display: flex; justify-content: between; align-items: center; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🏪 Store Bot Admin Panel</h1>
+        <nav class="nav">
+            <a href="/?auth={{ auth }}">Dashboard</a>
+            <a href="/products?auth={{ auth }}">Products</a>
+            <a href="/stock?auth={{ auth }}" class="active">Stock</a>
+            <a href="/users?auth={{ auth }}">Users</a>
+            <a href="/orders?auth={{ auth }}">Orders</a>
+        </nav>
+    </div>
+    
+    <div class="container">
+        <h2>📦 Stock Management</h2>
+        
+        {% for stock in stock_data %}
+        <div class="stock-section">
+            <div class="stock-header">
+                <div class="product-info">
+                    <div>
+                        <strong>{{ stock.product_name }}</strong> - {{ stock.variant_name }}
+                        <span style="color: #666;">${{ "%.2f"|format(stock.price) }}</span>
+                    </div>
+                    <div>
+                        {% if stock.stock_count > 10 %}
+                            <span class="stock-count">{{ stock.stock_count }} in stock</span>
+                        {% elif stock.stock_count > 0 %}
+                            <span class="stock-count low">{{ stock.stock_count }} left</span>
+                        {% else %}
+                            <span class="stock-count out">Out of stock</span>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            
+            <div class="stock-content">
+                {% if stock.stock_items %}
+                <div class="stock-items">
+                    {% for item in stock.stock_items %}
+                    <div class="stock-item">
+                        <button class="delete-btn" onclick="if(confirm('Delete this stock item?')) window.location.href='/delete_stock/{{ item._id }}?auth={{ auth }}'">×</button>
+                        <div style="font-family: monospace; font-size: 0.9em; word-break: break-all;">
+                            {{ item.content }}
+                        </div>
+                        <div style="font-size: 0.7em; color: #666; margin-top: 5px;">
+                            Added: {{ item.added_at.strftime('%Y-%m-%d') if item.added_at else 'Unknown' }}
+                        </div>
+                    </div>
+                    {% endfor %}
+                </div>
+                {% else %}
+                <p style="color: #666; font-style: italic;">No stock available</p>
+                {% endif %}
+                
+                <div class="stock-form">
+                    <h4>➕ Add Stock Items</h4>
+                    <form method="POST" action="/add_stock">
+                        <input type="hidden" name="auth" value="{{ auth }}">
+                        <input type="hidden" name="product_id" value="{{ stock.product_id }}">
+                        <input type="hidden" name="variant_id" value="{{ stock.variant_id }}">
+                        
+                        <div class="form-group">
+                            <label>Stock Items (one per line):</label>
+                            <textarea name="stock_content" placeholder="email@example.com,password123,extra info&#10;user2@example.com,pass456,more details&#10;account3,secret789" required></textarea>
+                            <small style="color: #666;">Format: email,password,extra_info (or any format you prefer)</small>
+                        </div>
+                        
+                        <button type="submit" class="btn">Add Stock</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+        
+        {% if not stock_data %}
+        <div class="stock-section">
+            <div class="stock-content" style="text-align: center; color: #666;">
+                <p>No products found. <a href="/add_product?auth={{ auth }}">Add a product first</a>.</p>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</body>
+</html>

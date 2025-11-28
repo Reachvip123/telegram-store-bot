@@ -63,12 +63,13 @@ logging.basicConfig(level=logging.INFO)
 
 # Initialize KHQR properly
 khqr = None
-if BAKONG_TOKEN:
+if BAKONG_TOKEN and not BAKONG_PROXY_URL:
     try:
         khqr = KHQR(BAKONG_TOKEN)
-        logging.info("[OK] KHQR initialized successfully")
+        logging.info("[OK] KHQR Direct mode initialized (WARNING: Requires Cambodia IP)")
     except Exception as e:
         logging.error(f"[ERROR] Failed to initialize KHQR: {e}")
+        logging.warning("[WARNING] If you're outside Cambodia, use BAKONG_PROXY_URL instead")
         khqr = None
 
 # If a proxy URL is provided, we'll use HTTP requests to talk to it
@@ -387,6 +388,7 @@ def safe_check_payment(md5):
             return data
         except Exception as e:
             logging.error(f"[PROXY KHQR CHECK] Error querying proxy for MD5={md5}: {e}")
+            return None
 
     if khqr:
         try:
@@ -394,8 +396,16 @@ def safe_check_payment(md5):
             logging.info(f"[KHQR CHECK] MD5={md5}, Result={result}")
             return result
         except Exception as e:
+            error_msg = str(e)
             logging.error(f"[KHQR CHECK] Error checking payment for MD5={md5}: {e}")
+            
+            # Check if it's an IP restriction error
+            if "IP" in error_msg.upper() or "403" in error_msg or "FORBIDDEN" in error_msg.upper():
+                logging.error("[KHQR IP BLOCK] Bakong API blocked this IP! You need Cambodia IP or use BAKONG_PROXY_URL")
+            
             return None
+    
+    logging.error("[KHQR CHECK] No payment method configured (no KHQR or Proxy)")
     return None
 
 def generate_trx_id():
@@ -1071,18 +1081,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 if __name__ == '__main__':
     # Validate KHQR configuration at startup
-    if not khqr and not BAKONG_PROXY_URL:
-        print("\n" + "="*60)
-        print("⚠️  WARNING: KHQR NOT CONFIGURED!")
-        print("="*60)
-        print("Payment verification will NOT work.")
-        print("Please set BAKONG_TOKEN in your .env file")
-        print("or configure BAKONG_PROXY_URL for proxy-based payment.")
-        print("="*60 + "\n")
+    print("\n" + "="*60)
+    if BAKONG_PROXY_URL:
+        print("✅ KHQR PROXY MODE ENABLED")
+        print(f"   Proxy URL: {BAKONG_PROXY_URL}")
+        print("   This bypasses Bakong IP restrictions")
     elif khqr:
-        print("[OK] KHQR Direct mode enabled")
-    elif BAKONG_PROXY_URL:
-        print(f"[OK] KHQR Proxy mode enabled: {BAKONG_PROXY_URL}")
+        print("⚠️  KHQR DIRECT MODE (Cambodia IP Required)")
+        print("   WARNING: Bakong API only works from Cambodia IPs")
+        print("   If deployed outside Cambodia, payments will FAIL!")
+        print("   Solution: Set BAKONG_PROXY_URL to a Cambodia-hosted proxy")
+    else:
+        print("❌ KHQR NOT CONFIGURED!")
+        print("   Payment verification will NOT work.")
+        print("   Options:")
+        print("   1. Set BAKONG_TOKEN (requires Cambodia IP)")
+        print("   2. Set BAKONG_PROXY_URL (for non-Cambodia deployments)")
+    print("="*60 + "\n")
     
     load_products()
     

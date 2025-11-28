@@ -146,7 +146,8 @@ def login():
         else:
             flash('Invalid credentials!', 'danger')
     
-    return render_template('login.html')
+    error = request.args.get('error')
+    return render_template('login.html', error=error)
 
 @app.route('/logout')
 def logout():
@@ -359,5 +360,6 @@ if __name__ == '__main__':
     print("  CHANGE PASSWORD AFTER LOGIN!")
     print("="*50)
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), debug=False)
+
 
 

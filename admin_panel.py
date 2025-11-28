@@ -72,21 +72,13 @@ def verify_admin():
         return json.load(f)
 
 def load_products():
-    if USE_API:
-        result = api_request('GET', '/api/products')
-        return result if result else {}
-    if not os.path.exists(PRODUCTS_FILE):
-        return {}
-    with open(PRODUCTS_FILE, 'r') as f:
-        return json.load(f)
+    return APIClient.get_products()
 
-def save_products(data):`n    return APIClient.save_products(data)
+def save_products(data):
+    return APIClient.save_products(data)
 
 def load_users():
-    if not os.path.exists(USERS_FILE):
-        return {}
-    with open(USERS_FILE, 'r') as f:
-        return json.load(f)
+    return APIClient.get_users()
 
 def load_config():
     if not os.path.exists(CONFIG_FILE):
@@ -396,7 +388,6 @@ if __name__ == '__main__':
     print("  CHANGE PASSWORD AFTER LOGIN!")
     print("="*50)
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), debug=False)
-
 
 
 

@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+
+{% block title %}Settings{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+    <div class="col-12">
+        <h1><i class="fas fa-cog"></i> Settings</h1>
+        <p class="text-muted">Configure your store settings</p>
+    </div>
+</div>
+
+<div class="row">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="fas fa-lock"></i> Change Password</h5>
+            </div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('settings') }}">
+                    <input type="hidden" name="action" value="change_password">
+                    <div class="mb-3">
+                        <label class="form-label">Current Password</label>
+                        <input type="password" class="form-control" name="current_password" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">New Password</label>
+                        <input type="password" class="form-control" name="new_password" required>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Confirm New Password</label>
+                        <input type="password" class="form-control" name="confirm_password" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="fas fa-save"></i> Change Password
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="fas fa-message"></i> Welcome Message</h5>
+            </div>
+            <div class="card-body">
+                <form method="POST" action="{{ url_for('settings') }}">
+                    <input type="hidden" name="action" value="update_welcome">
+                    <div class="mb-3">
+                        <label class="form-label">Welcome Message</label>
+                        <textarea class="form-control" name="welcome_message" rows="5">{{ config.welcome if config.welcome and config.welcome != 'default' else 'Welcome to our store!' }}</textarea>
+                        <small class="text-muted">This message will be shown when users start the bot</small>
+                    </div>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="fas fa-save"></i> Save Message
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="row mt-4">
+    <div class="col-12">
+        <div class="card">
+            <div class="card-header">
+                <h5 class="mb-0"><i class="fas fa-info-circle"></i> System Information</h5>
+            </div>
+            <div class="card-body">
+                <table class="table">
+                    <tr>
+                        <th>Database Folder:</th>
+                        <td><code>{{ 'database/' }}</code></td>
+                    </tr>
+                    <tr>
+                        <th>Products File:</th>
+                        <td><code>database/products.json</code></td>
+                    </tr>
+                    <tr>
+                        <th>Users File:</th>
+                        <td><code>database/users.json</code></td>
+                    </tr>
+                    <tr>
+                        <th>Stock Files:</th>
+                        <td><code>database/stock_*.txt</code></td>
+                    </tr>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

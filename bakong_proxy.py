@@ -69,5 +69,6 @@ def health():
 
 if __name__ == '__main__':
     print("[OK] Bakong KHQR Proxy Server Starting...")
-    print(f"[INFO] Make sure this runs on a Cambodia IP address")
-    app.run(host='0.0.0.0', port=5000)
+    print("[INFO] Make sure this runs on a Cambodia IP address")
+    print("[INFO] Listening on port 80 (HTTP)")
+    app.run(host='0.0.0.0', port=80, debug=False)

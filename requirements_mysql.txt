@@ -1,0 +1,23 @@
+# Core Telegram Bot Dependencies
+python-telegram-bot==20.7
+python-dotenv==1.0.0
+
+# Payment Integration (Bakong KHQR Cambodia)
+bakong-khqr==1.1.4
+
+# Image Processing (for QR codes)
+Pillow==10.1.0
+qrcode[pil]==7.4.2
+
+# MySQL Database Support for Hostinger
+mysql-connector-python==8.2.0
+
+# Web Admin Panel (Flask)
+Flask==3.0.0
+bcrypt==4.1.2
+
+# HTTP Requests (for payment verification proxy)
+requests==2.31.0
+
+# Additional utilities
+asyncio-mqtt==0.16.1

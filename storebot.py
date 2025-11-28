@@ -1727,6 +1727,10 @@ async def cmd_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Backup failed: {e}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Safety check
+    if not update.message:
+        return
+    
     # Handle photo uploads for banners
     if update.message.photo and update.effective_user.id == ADMIN_ID:
         banner_type = context.user_data.get('awaiting_banner')
@@ -1744,7 +1748,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop('awaiting_banner', None)
             return
     
-    text = update.message.text
+    # Get text from message
+    text = update.message.text if update.message.text else ""
     if not text:
         return
 

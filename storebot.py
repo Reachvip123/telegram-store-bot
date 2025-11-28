@@ -13,7 +13,20 @@ from telegram.ext import ApplicationBuilder, ContextTypes, CommandHandler, Callb
 from bakong_khqr import KHQR
 
 # Load environment variables from .env file
-load_dotenv()
+# Try multiple locations for .env file
+import sys
+from pathlib import Path
+
+# Get the directory where the script is located
+script_dir = Path(__file__).parent.absolute()
+env_path = script_dir / '.env'
+
+if env_path.exists():
+    load_dotenv(env_path)
+    print(f"[OK] Loaded .env from: {env_path}")
+else:
+    load_dotenv()
+    print("[WARNING] .env file not found in script directory, trying current directory")
 
 # ==========================================
 # 👇 CONFIGURATION (from environment variables)

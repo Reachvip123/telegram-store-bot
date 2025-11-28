@@ -1,1 +1,1 @@
-worker: python storebot.py
+web: gunicorn admin_panel:app

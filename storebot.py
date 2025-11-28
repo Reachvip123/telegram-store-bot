@@ -1342,7 +1342,7 @@ async def cmd_view_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg, parse_mode='Markdown')
 
 async def cmd_view_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """View all users/customers"""
+    """View specific user or summary"""
     if update.effective_user.id != ADMIN_ID: return
     
     try:
@@ -1353,27 +1353,55 @@ async def cmd_view_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with open(USERS_FILE, 'r') as f:
             users = json.load(f)
         
+        # Check if username provided
+        if context.args:
+            search_username = context.args[0].replace('@', '').lower()
+            
+            # Search for user
+            found = None
+            for uid, data in users.items():
+                if data.get('username', '').lower() == search_username:
+                    found = (uid, data)
+                    break
+            
+            if found:
+                uid, data = found
+                username = data.get('username', 'Unknown')
+                spent = data.get('spent', 0)
+                joined = data.get('joined', 'N/A')[:19]
+                
+                msg = f"👤 **Customer Details**\n\n"
+                msg += f"Username: @{username}\n"
+                msg += f"User ID: `{uid}`\n"
+                msg += f"Total Spent: ${spent:.2f}\n"
+                msg += f"Joined: {joined}\n"
+                
+                await update.message.reply_text(msg, parse_mode='Markdown')
+            else:
+                await update.message.reply_text(
+                    f"❌ User @{search_username} not found.\n\n"
+                    f"Try: `/viewusers username`"
+                )
+            return
+        
+        # Show summary if no username provided
         msg = "👥 **CUSTOMER DATABASE**\n\n"
-        msg += f"Total Customers: {len(users)}\n\n"
+        msg += f"📊 Total Customers: {len(users)}\n"
+        
+        # Calculate total revenue
+        total_revenue = sum(u.get('spent', 0) for u in users.values())
+        msg += f"💰 Total Revenue: ${total_revenue:.2f}\n\n"
         
         # Sort by spending
         sorted_users = sorted(users.items(), key=lambda x: x[1].get('spent', 0), reverse=True)
         
-        for uid, data in sorted_users[:20]:  # Show top 20
+        msg += "**Top 10 Customers:**\n"
+        for i, (uid, data) in enumerate(sorted_users[:10], 1):
             username = data.get('username', 'Unknown')
             spent = data.get('spent', 0)
-            joined = data.get('joined', 'N/A')[:10]
-            msg += f"• @{username}\n"
-            msg += f"  ID: `{uid}`\n"
-            msg += f"  Spent: ${spent:.2f}\n"
-            msg += f"  Joined: {joined}\n\n"
+            msg += f"{i}. @{username} - ${spent:.2f}\n"
         
-        if len(users) > 20:
-            msg += f"\n_Showing top 20 of {len(users)} customers_"
-        
-        # Calculate total revenue
-        total_revenue = sum(u.get('spent', 0) for u in users.values())
-        msg += f"\n\n💰 **Total Revenue:** ${total_revenue:.2f}"
+        msg += f"\n💡 _View specific user:_\n`/viewusers username`"
         
         await update.message.reply_text(msg, parse_mode='Markdown')
         

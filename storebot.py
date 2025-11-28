@@ -311,42 +311,71 @@ def reindex_products():
 
 # --- 2. QR GENERATOR ---
 def generate_qr_data(amount):
+    """Generate official Bakong KHQR code for Cambodia payments"""
     # If a proxy is configured (must be hosted in Cambodia), use it to create QR
     if BAKONG_PROXY_URL and requests:
         try:
             payload = {"amount": amount, "bank_account": BAKONG_ACCOUNT, "merchant_name": MERCHANT_NAME}
             resp = requests.post(f"{BAKONG_PROXY_URL.rstrip('/')}/create_qr", json=payload, timeout=15)
             data = resp.json()
+            logging.info(f"[KHQR GENERATED] Official Bakong KHQR via Proxy - Amount: ${amount}")
             return data.get("qr_code"), data.get("md5")
         except Exception as e:
             logging.error(f"[PROXY QR] Error calling proxy create_qr: {e}")
 
     if khqr:
+        # Generate official Bakong KHQR code
         qr_code = khqr.create_qr(
-            bank_account=BAKONG_ACCOUNT, merchant_name=MERCHANT_NAME, merchant_city="PP",
-            amount=amount, currency="USD", store_label="Store", phone_number="85512345678",
-            bill_number=f"INV-{int(amount*1000)}", terminal_label="Bot01"
+            bank_account=BAKONG_ACCOUNT, 
+            merchant_name=MERCHANT_NAME, 
+            merchant_city="PP",
+            amount=amount, 
+            currency="USD", 
+            store_label="Store", 
+            phone_number="85512345678",
+            bill_number=f"INV-{int(amount*1000)}", 
+            terminal_label="Bot01"
         )
         md5 = khqr.generate_md5(qr_code)
+        logging.info(f"[KHQR GENERATED] Official Bakong KHQR - Amount: ${amount}, MD5: {md5}")
         return qr_code, md5
 
-    # Fallback test url
+    # Fallback - should not be used in production
+    logging.warning(f"[QR FALLBACK] Using test URL - NOT a real Bakong KHQR!")
     return f"https://bakong.nbc.gov.kh/pay?amount={amount}", "test_md5_hash"
 
 def create_styled_qr(qr_data, amount):
+    """Create Bakong KHQR image with official green color"""
     possible_paths = [TEMPLATE_FILE, f"/storage/emulated/0/Download/{TEMPLATE_FILE}"]
     found_path = None
     for p in possible_paths:
         if os.path.exists(p): found_path = p; break
     
+    # Generate basic KHQR image if no template
     if not found_path:
-        img = qrcode.make(qr_data); fname = f"qr_{random.randint(1000,9999)}.png"; img.save(fname); return fname
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=4,
+        )
+        qr.add_data(qr_data)
+        qr.make(fit=True)
+        # Official Bakong green color
+        img = qr.make_image(fill_color="#107c42", back_color="white")
+        fname = f"qr_{random.randint(1000,9999)}.png"
+        img.save(fname)
+        logging.info(f"[QR IMAGE] Generated basic Bakong KHQR image: {fname}")
+        return fname
 
     try:
+        # Create styled KHQR with template
         card = Image.open(found_path).convert("RGBA")
         W, H = card.size
         qr = qrcode.QRCode(box_size=20, border=0) 
-        qr.add_data(qr_data); qr.make(fit=True)
+        qr.add_data(qr_data)
+        qr.make(fit=True)
+        # Official Bakong green color (#107c42)
         qr_img = qr.make_image(fill_color="#107c42", back_color="white").convert("RGBA")
         
         qr_target_size = int(W * 0.55)
@@ -868,12 +897,30 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if get_stock_count(pid, vid) < qty:
             await query.message.reply_text("❌ **Sold Out!** Please check back later.", parse_mode='Markdown'); return
         
-        await query.message.reply_text(f"⏳ Generating KHQR...")
+        await query.message.reply_text(f"⏳ Generating Bakong KHQR code...")
         qr_text, md5 = generate_qr_data(total)
         filename = create_styled_qr(qr_text, total)
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel Transaction", callback_data="cancel")]])
-        msg = await query.message.reply_photo(photo=open(filename, 'rb'), caption=f"💳 **Pay ${total:.2f}**\nItem: {prod['name']} x{qty}\n\n_Scanning payment..._",
-            parse_mode='Markdown', reply_markup=markup)
+        
+        caption = (
+            f"💳 **BAKONG KHQR PAYMENT**\n"
+            f"Amount: **${total:.2f}**\n"
+            f"Product: {prod['name']} x{qty}\n\n"
+            f"🇰🇭 Scan with any Bakong app:\n"
+            f"• ABA Mobile\n"
+            f"• Wing Money\n"
+            f"• TrueMoney\n"
+            f"• Pi Pay\n"
+            f"• Any bank app with Bakong\n\n"
+            f"⏳ _Waiting for payment..._"
+        )
+        
+        msg = await query.message.reply_photo(
+            photo=open(filename, 'rb'), 
+            caption=caption,
+            parse_mode='Markdown', 
+            reply_markup=markup
+        )
         os.remove(filename)
         asyncio.create_task(check_payment_loop(update, context, md5, msg.message_id, pid, vid, qty))
 

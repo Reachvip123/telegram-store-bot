@@ -535,32 +535,35 @@ async def check_payment_loop(update, context, md5_hash, qr_msg_id, pid, vid, qty
                         save_products(products)
 
                     acc_text = ""
-                    # Build detailed account text with multiple info lines and optional tutorial link
+                    # Build detailed account text with emojis and tutorial link
                     tutorial_url = products.get(pid, {}).get('variants', {}).get(vid, {}).get('tutorial')
                     for i, acc in enumerate(accounts):
-                        acc_text += f"\nItem Details #{i+1}\n"
+                        acc_text += f"\n📦 **Item Details #{i+1}**\n"
+                        acc_text += "- - - - - - - - - - - - - - - - - - - - - -\n"
+                        
                         if "," in acc:
                             parts = [p.strip() for p in acc.split(",")]
-                            u = parts[0] if len(parts) > 0 else "N/A"
-                            p = parts[1] if len(parts) > 1 else "N/A"
+                            email = parts[0] if len(parts) > 0 else "N/A"
+                            password = parts[1] if len(parts) > 1 else "N/A"
                             details_parts = parts[2:]
                         else:
                             parts = [acc.strip()]
-                            u = parts[0]
-                            p = "N/A"
+                            email = parts[0]
+                            password = "N/A"
                             details_parts = []
 
-                        acc_text += f"Email/Username : `{u}`\n"
-                        acc_text += f"Password : `{p}`\n\n"
+                        acc_text += f"💌 : `{email}`\n"
+                        acc_text += f"🔑 : `{password}`\n\n"
+                        
                         if details_parts:
-                            acc_text += "Additional Information:\n"
-                            # each detail part on its own line
-                            acc_text += "\n".join(details_parts) + "\n\n"
+                            acc_text += "**More Info** ...\n\n"
+                            for detail in details_parts:
+                                acc_text += f"{detail}\n"
+                            acc_text += "\n"
 
                         # Add tutorial link if set for this variant
                         if tutorial_url:
-                            # Markdown link
-                            acc_text += f"[Tutorial Sign In]({tutorial_url})\n"
+                            acc_text += f"📚 [Tutorial Sign In]({tutorial_url})\n"
                         acc_text += "\n"
 
                     text = (
@@ -680,26 +683,31 @@ async def cmd_forceconfirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         acc_text = ""
         tutorial_url = products.get(pid, {}).get('variants', {}).get(vid, {}).get('tutorial')
         for i, acc in enumerate(accounts):
-            acc_text += f"\nItem Details #{i+1}\n"
+            acc_text += f"\n📦 **Item Details #{i+1}**\n"
+            acc_text += "- - - - - - - - - - - - - - - - - - - - - -\n"
+            
             if "," in acc:
                 parts = [p.strip() for p in acc.split(",")]
-                u = parts[0] if len(parts) > 0 else "N/A"
-                p = parts[1] if len(parts) > 1 else "N/A"
+                email = parts[0] if len(parts) > 0 else "N/A"
+                password = parts[1] if len(parts) > 1 else "N/A"
                 details_parts = parts[2:]
             else:
                 parts = [acc.strip()]
-                u = parts[0]
-                p = "N/A"
+                email = parts[0]
+                password = "N/A"
                 details_parts = []
 
-            acc_text += f"Email/Username : `{u}`\n"
-            acc_text += f"Password : `{p}`\n\n"
+            acc_text += f"💌 : `{email}`\n"
+            acc_text += f"🔑 : `{password}`\n\n"
+            
             if details_parts:
-                acc_text += "Additional Information:\n"
-                acc_text += "\n".join(details_parts) + "\n\n"
+                acc_text += "**More Info** ...\n\n"
+                for detail in details_parts:
+                    acc_text += f"{detail}\n"
+                acc_text += "\n"
 
             if tutorial_url:
-                acc_text += f"[Tutorial Sign In]({tutorial_url})\n"
+                acc_text += f"📚 [Tutorial Sign In]({tutorial_url})\n"
             acc_text += "\n"
 
         trx_id = generate_trx_id()
@@ -838,10 +846,12 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for vid, var in prod['variants'].items():
             stock = get_stock_count(pid, vid)
             status = "🟢" if stock > 0 else "🔴"
+            tutorial_icon = "📚" if var.get('tutorial') else "➕"
             text += f"┊ • {var['name']} (${var['price']:.2f}) - {status}\n"
             row = [InlineKeyboardButton(f"{var['name']} - ${var['price']:.2f}", callback_data=f"confirm_{pid}_{vid}_1")]
             if query.from_user.id == ADMIN_ID:
                 row.append(InlineKeyboardButton("🗑", callback_data=f"delvar_{pid}_{vid}"))
+                row.append(InlineKeyboardButton(f"{tutorial_icon}", callback_data=f"tutorial_{pid}_{vid}"))
             keyboard.append(row)
         text += "╰ - - - - - - - - - - - - - - - - - - - ╯"
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="back_list")])
@@ -858,8 +868,18 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         vid = data[2]
         context.user_data['tutorial_pid'] = pid
         context.user_data['tutorial_vid'] = vid
+        products = load_products()
+        prod_name = products.get(pid, {}).get('name', 'Unknown')
+        var_name = products.get(pid, {}).get('variants', {}).get(vid, {}).get('name', 'Unknown')
+        current_tutorial = products.get(pid, {}).get('variants', {}).get(vid, {}).get('tutorial', 'Not set')
         try:
-            await query.message.reply_text(f"Send the tutorial link (URL) for product {pid} variant {vid} now.")
+            await query.message.reply_text(
+                f"📚 **Set Tutorial Link**\n\n"
+                f"Product: {prod_name}\n"
+                f"Variant: {var_name}\n\n"
+                f"Current: {current_tutorial}\n\n"
+                f"Send the tutorial link (URL) now."
+            )
         except:
             pass
 
@@ -991,6 +1011,37 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
             clear_stock(pid, vid); del products[pid]['variants'][vid]; save_products(products)
             await context.bot.send_message(query.message.chat_id, f"🗑 Variant {vid} Deleted."); await show_products(update, context)
 
+    elif action == "tutprod":
+        # Tutorial: product selected, show variants
+        if query.from_user.id != ADMIN_ID: return
+        pid = data[1]
+        if pid not in products: return
+        prod = products[pid]
+        keyboard = []
+        for vid, var in prod['variants'].items():
+            tutorial_status = "✅" if var.get('tutorial') else "❌"
+            keyboard.append([InlineKeyboardButton(f"{tutorial_status} {var['name']}", callback_data=f"tutorial_{pid}_{vid}")])
+        keyboard.append([InlineKeyboardButton("🔙 Back", callback_data="tutorial_back")])
+        try:
+            await query.edit_message_text(
+                f"📚 **Tutorial Links - {prod['name']}**\n\n"
+                f"Select variant to set tutorial link:\n"
+                f"✅ = Has tutorial | ❌ = No tutorial",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+        except:
+            pass
+
+    elif action == "tutorial" and data[0] == "tutorial" and callback_data == "tutorial_cancel":
+        try:
+            await query.edit_message_text("❌ Cancelled.")
+        except:
+            pass
+
+    elif action == "tutorial" and data[0] == "tutorial" and callback_data == "tutorial_back":
+        await cmd_tutorial(update, context)
+
 # --- 5. ADMIN LOGIC ---
 
 async def start_add_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1112,8 +1163,23 @@ async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_tutorial(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Start interactive tutorial link setup for a product
     if update.effective_user.id != ADMIN_ID: return
-    await update.message.reply_text("Enter product id:")
-    context.user_data['await_tutorial_pid'] = True
+    products = load_products()
+    if not products:
+        await update.message.reply_text("❌ No products available.")
+        return
+    
+    keyboard = []
+    for pid in sorted(products.keys(), key=lambda x: int(x)):
+        p = products[pid]
+        keyboard.append([InlineKeyboardButton(f"{p['name']}", callback_data=f"tutprod_{pid}")])
+    keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="tutorial_cancel")])
+    
+    await update.message.reply_text(
+        "📚 **Set Tutorial Links**\n\n"
+        "Select a product:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='Markdown'
+    )
 
 async def cmd_set_banner_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
@@ -1143,6 +1209,7 @@ async def cmd_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🛠 **ADMIN MENU**\n\n"
         "`/addpd Name | Var | Price | Desc`\n"
         "`/addstock` (Interactive)\n"
+        "`/tutorial` - Set tutorial links\n"
         "`/setbanner_welcome URL`\n"
         "`/setbanner_products URL`\n"
         "`/broadcast Msg`\n"
@@ -1211,21 +1278,6 @@ async def cmd_test_khqr(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
-    # Admin flow: awaiting product id for tutorial setup
-    if update.effective_user.id == ADMIN_ID and context.user_data.get('await_tutorial_pid'):
-        pid = text.strip()
-        products = load_products()
-        if pid not in products:
-            await update.message.reply_text("❌ Invalid product id. Try again.")
-            return
-        keyboard = []
-        for vid in products[pid].get('variants', {}).keys():
-            keyboard.append([InlineKeyboardButton(f"{products[pid]['variants'][vid]['name']}", callback_data=f"tutorial_{pid}_{vid}")])
-        keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="tutorial_cancel")])
-        await update.message.reply_text(f"Select variant for product {pid}:", reply_markup=InlineKeyboardMarkup(keyboard))
-        context.user_data.pop('await_tutorial_pid', None)
-        return
-
     # Admin flow: awaiting tutorial link for selected variant
     if update.effective_user.id == ADMIN_ID and context.user_data.get('tutorial_pid'):
         link = text.strip()
@@ -1235,9 +1287,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not pid or pid not in products or vid not in products[pid].get('variants', {}):
             await update.message.reply_text("❌ Product or variant not found.")
             return
+        
+        # Validate URL
+        if not link.startswith('http://') and not link.startswith('https://'):
+            await update.message.reply_text("❌ Invalid URL. Must start with http:// or https://")
+            context.user_data['tutorial_pid'] = pid
+            context.user_data['tutorial_vid'] = vid
+            return
+        
         products[pid]['variants'][vid]['tutorial'] = link
         save_products(products)
-        await update.message.reply_text(f"✅ Tutorial link saved for product {pid} variant {vid}.")
+        prod_name = products[pid]['name']
+        var_name = products[pid]['variants'][vid]['name']
+        await update.message.reply_text(
+            f"✅ **Tutorial Link Saved!**\n\n"
+            f"Product: {prod_name}\n"
+            f"Variant: {var_name}\n"
+            f"Link: {link}\n\n"
+            f"Customers will see this when they purchase.",
+            parse_mode='Markdown'
+        )
         return
 
     # Regular user actions

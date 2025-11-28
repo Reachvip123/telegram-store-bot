@@ -63,6 +63,10 @@ TEMPLATE_FILE = "template.png" # Keep in root folder for easy access
 
 # STATES
 SELECT_PROD, SELECT_VAR, INPUT_STOCK = range(3)
+# Broadcast states
+BROADCAST_MSG, BROADCAST_CONFIRM = range(2)
+# Delete stock states
+DEL_SELECT_PROD, DEL_SELECT_VAR, DEL_INPUT_ITEMS = range(3)
 # ==========================================
 
 logging.basicConfig(level=logging.INFO)
@@ -1120,33 +1124,331 @@ async def cmd_add_product_easy(update: Update, context: ContextTypes.DEFAULT_TYP
         logging.error(f"Error adding product: {e}")
         await update.message.reply_text(f"❌ Error: {e}")
 
+# ==================== BROADCAST (New Version) ====================
 async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID: return
+    """Start broadcast - ask admin to send message"""
+    if update.effective_user.id != ADMIN_ID: return ConversationHandler.END
     
-    if not context.args:
-        await update.message.reply_text("⚠️ Usage: `/broadcast <message>`", parse_mode='Markdown')
-        return
+    await update.message.reply_text(
+        "📢 *Broadcast Message*\n\n"
+        "Send me the message you want to broadcast to all users.\n\n"
+        "You can send:\n"
+        "• Text message\n"
+        "• Photo with caption\n"
+        "• Document\n\n"
+        "Send /cancel to cancel.",
+        parse_mode='Markdown'
+    )
+    return BROADCAST_MSG
+
+async def broadcast_receive_msg(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive broadcast message and confirm"""
+    # Store message details
+    msg = update.message
+    context.user_data['broadcast_text'] = msg.text or msg.caption
+    context.user_data['broadcast_photo'] = msg.photo[-1].file_id if msg.photo else None
+    context.user_data['broadcast_document'] = msg.document.file_id if msg.document else None
     
-    msg = " ".join(context.args)
     users = get_all_users()
     
-    if not users:
-        await update.message.reply_text("ℹ️ No users to broadcast to.")
-        return
+    preview = context.user_data['broadcast_text'] or "[Media]"
+    if len(preview) > 100:
+        preview = preview[:100] + "..."
     
-    await update.message.reply_text(f"📢 Sending to {len(users)} users...")
+    await update.message.reply_text(
+        f"📢 *Ready to broadcast:*\n\n"
+        f"{preview}\n\n"
+        f"Will send to {len(users)} users.\n\n"
+        f"Type 'YES' to confirm or /cancel to abort.",
+        parse_mode='Markdown'
+    )
+    return BROADCAST_CONFIRM
+
+async def broadcast_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Confirm and send broadcast"""
+    if update.message.text.upper() != 'YES':
+        await update.message.reply_text("❌ Broadcast cancelled.")
+        return ConversationHandler.END
+    
+    users = get_all_users()
+    text = context.user_data.get('broadcast_text', '')
+    photo = context.user_data.get('broadcast_photo')
+    document = context.user_data.get('broadcast_document')
+    
+    await update.message.reply_text(f"📢 Broadcasting to {len(users)} users...")
+    
     success = 0
     failed = 0
     
     for uid in users:
         try:
-            await context.bot.send_message(uid, f"📢 **NOTICE:**\n{msg}", parse_mode='Markdown')
+            if photo:
+                await context.bot.send_photo(uid, photo, caption=f"📢 *NOTICE*\n\n{text}", parse_mode='Markdown')
+            elif document:
+                await context.bot.send_document(uid, document, caption=f"📢 *NOTICE*\n\n{text}", parse_mode='Markdown')
+            else:
+                await context.bot.send_message(uid, f"📢 *NOTICE*\n\n{text}", parse_mode='Markdown')
             success += 1
         except Exception as e:
-            logging.warning(f"Failed to send message to {uid}: {e}")
+            logging.warning(f"Failed to send to {uid}: {e}")
             failed += 1
     
-    await update.message.reply_text(f"✅ Done. Sent: {success}, Failed: {failed}")
+    await update.message.reply_text(f"✅ Broadcast complete!\n\nSent: {success}\nFailed: {failed}")
+    return ConversationHandler.END
+
+# ==================== DATA STOCK ====================
+async def cmd_datastock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Export all stock to text files"""
+    if update.effective_user.id != ADMIN_ID: return
+    
+    products = load_products()
+    
+    if not products:
+        await update.message.reply_text("❌ No products found.")
+        return
+    
+    await update.message.reply_text("📦 Generating stock data files...")
+    
+    total_files = 0
+    for pid, product in products.items():
+        for vid, vname in product.get('variants', {}).items():
+            stock_file = f"{DB_FOLDER}/stock_{pid}_{vid}.txt"
+            
+            if not os.path.exists(stock_file):
+                continue
+            
+            # Read stock
+            with open(stock_file, 'r', encoding='utf-8') as f:
+                accounts = [line.strip() for line in f if line.strip()]
+            
+            if not accounts:
+                continue
+            
+            # Create detailed stock file
+            output_file = f"{DB_FOLDER}/datastock_{pid}_{vid}.txt"
+            with open(output_file, 'w', encoding='utf-8') as f:
+                f.write(f"=" * 50 + "\n")
+                f.write(f"Product: {product['name']}\n")
+                f.write(f"Variant: {vname}\n")
+                f.write(f"Total Stock: {len(accounts)}\n")
+                f.write(f"=" * 50 + "\n\n")
+                
+                for idx, account in enumerate(accounts, 1):
+                    f.write(f"{idx}. {account}\n")
+            
+            # Send file to admin
+            with open(output_file, 'rb') as f:
+                await context.bot.send_document(
+                    update.effective_user.id,
+                    document=f,
+                    filename=f"{product['name']}_{vname}.txt",
+                    caption=f"📦 *{product['name']} - {vname}*\nStock: {len(accounts)}",
+                    parse_mode='Markdown'
+                )
+            
+            total_files += 1
+    
+    if total_files == 0:
+        await update.message.reply_text("ℹ️ No stock data available.")
+    else:
+        await update.message.reply_text(f"✅ Sent {total_files} stock data files!")
+
+# ==================== DELETE STOCK ====================
+async def cmd_deletestock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start delete stock process"""
+    if update.effective_user.id != ADMIN_ID: return ConversationHandler.END
+    
+    products = load_products()
+    if not products:
+        await update.message.reply_text("❌ No products available.")
+        return ConversationHandler.END
+    
+    keyboard = []
+    for pid, p in products.items():
+        keyboard.append([InlineKeyboardButton(f"{p['name']}", callback_data=f"delstock_prod_{pid}")])
+    
+    keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="delstock_cancel")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "🗑️ *Delete Stock*\n\nSelect product:",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+    return DEL_SELECT_PROD
+
+async def deletestock_select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Select product for delete stock"""
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "delstock_cancel":
+        await query.edit_message_text("❌ Cancelled.")
+        return ConversationHandler.END
+    
+    pid = query.data.replace("delstock_prod_", "")
+    context.user_data['del_pid'] = pid
+    
+    products = load_products()
+    product = products.get(pid, {})
+    variants = product.get('variants', {})
+    
+    if not variants:
+        await query.edit_message_text("❌ No variants found.")
+        return ConversationHandler.END
+    
+    keyboard = []
+    for vid, vname in variants.items():
+        count = get_stock_count(pid, vid)
+        keyboard.append([InlineKeyboardButton(f"{vname} ({count} stock)", callback_data=f"delstock_var_{vid}")])
+    
+    keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="delstock_cancel")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(
+        f"🗑️ *Delete Stock - {product['name']}*\n\nSelect variant:",
+        reply_markup=reply_markup,
+        parse_mode='Markdown'
+    )
+    return DEL_SELECT_VAR
+
+async def deletestock_select_variant(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show numbered stock list"""
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "delstock_cancel":
+        await query.edit_message_text("❌ Cancelled.")
+        return ConversationHandler.END
+    
+    vid = query.data.replace("delstock_var_", "")
+    context.user_data['del_vid'] = vid
+    
+    pid = context.user_data['del_pid']
+    products = load_products()
+    product = products.get(pid, {})
+    vname = product.get('variants', {}).get(vid, 'Unknown')
+    
+    # Get stock
+    stock_file = f"{DB_FOLDER}/stock_{pid}_{vid}.txt"
+    if not os.path.exists(stock_file):
+        await query.edit_message_text("❌ No stock available.")
+        return ConversationHandler.END
+    
+    with open(stock_file, 'r', encoding='utf-8') as f:
+        accounts = [line.strip() for line in f if line.strip()]
+    
+    if not accounts:
+        await query.edit_message_text("❌ No stock available.")
+        return ConversationHandler.END
+    
+    # Show numbered list
+    msg = f"🗑️ *Delete Stock - {product['name']} - {vname}*\n\n"
+    msg += f"Total: {len(accounts)} items\n\n"
+    
+    for idx, account in enumerate(accounts[:50], 1):  # Show first 50
+        preview = account[:50] + "..." if len(account) > 50 else account
+        msg += f"`{idx}.` {preview}\n"
+    
+    if len(accounts) > 50:
+        msg += f"\n... and {len(accounts) - 50} more\n"
+    
+    msg += "\n📝 *Copy and paste the EXACT account text you want to delete* (one per message).\n\n"
+    msg += "Send /done when finished or /cancel to abort."
+    
+    await query.edit_message_text(msg, parse_mode='Markdown')
+    return DEL_INPUT_ITEMS
+
+async def deletestock_receive_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Receive item to delete"""
+    if update.message.text.startswith('/done'):
+        deleted = context.user_data.get('deleted_count', 0)
+        await update.message.reply_text(f"✅ Deleted {deleted} items!")
+        context.user_data.clear()
+        return ConversationHandler.END
+    
+    pid = context.user_data['del_pid']
+    vid = context.user_data['del_vid']
+    item_to_delete = update.message.text.strip()
+    
+    # Read stock
+    stock_file = f"{DB_FOLDER}/stock_{pid}_{vid}.txt"
+    with open(stock_file, 'r', encoding='utf-8') as f:
+        accounts = [line.strip() for line in f if line.strip()]
+    
+    # Try to delete
+    if item_to_delete in accounts:
+        accounts.remove(item_to_delete)
+        
+        # Write back
+        with open(stock_file, 'w', encoding='utf-8') as f:
+            for acc in accounts:
+                f.write(acc + '\n')
+        
+        count = context.user_data.get('deleted_count', 0)
+        context.user_data['deleted_count'] = count + 1
+        
+        await update.message.reply_text(f"✅ Deleted! Remaining: {len(accounts)}")
+    else:
+        await update.message.reply_text("❌ Item not found. Copy exact text.")
+    
+    return DEL_INPUT_ITEMS
+
+# ==================== TRANSACTION ====================
+async def cmd_transaction(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lookup transaction details"""
+    if update.effective_user.id != ADMIN_ID: return
+    
+    if not context.args:
+        await update.message.reply_text(
+            "⚠️ *Usage:* `/transaction <transaction_id>`\n\n"
+            "Send the transaction ID to view full delivery details.",
+            parse_mode='Markdown'
+        )
+        return
+    
+    txn_id = " ".join(context.args)
+    
+    users = get_user_data()
+    found = False
+    
+    for uid, user_data in users.items():
+        orders = user_data.get('orders', [])
+        
+        for order in orders:
+            if order.get('transaction_id') == txn_id or order.get('khqr_id') == txn_id:
+                found = True
+                
+                # Build delivery message
+                msg = "📦 *Transaction Found!*\n\n"
+                msg += f"🆔 *Transaction ID:* `{txn_id}`\n"
+                msg += f"👤 *Customer:* {user_data.get('username', 'Unknown')} (`{uid}`)\n"
+                msg += f"📅 *Date:* {order.get('date', 'N/A')}\n"
+                msg += f"💵 *Amount:* ${order.get('amount', 0):.2f}\n\n"
+                
+                msg += "📋 *Items Delivered:*\n"
+                
+                products = load_products()
+                items = order.get('items', [])
+                
+                for item in items:
+                    pid = item.get('product_id')
+                    vid = item.get('variant_id')
+                    account = item.get('account', 'N/A')
+                    
+                    product_name = products.get(pid, {}).get('name', 'Unknown')
+                    variant_name = products.get(pid, {}).get('variants', {}).get(vid, 'Unknown')
+                    
+                    msg += f"\n• *{product_name} - {variant_name}*\n"
+                    msg += f"  Account: `{account}`\n"
+                
+                msg += f"\n📌 *Status:* {order.get('status', 'completed')}\n"
+                
+                await update.message.reply_text(msg, parse_mode='Markdown')
+                return
+    
+    if not found:
+        await update.message.reply_text(f"❌ Transaction ID `{txn_id}` not found.", parse_mode='Markdown')
 
 async def cmd_tutorial(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Start interactive tutorial link setup for a product
@@ -1508,12 +1810,37 @@ if __name__ == '__main__':
     )
 
     application.add_handler(stock_conv)
+    
+    # Broadcast conversation handler
+    broadcast_conv = ConversationHandler(
+        entry_points=[CommandHandler('broadcast', cmd_broadcast)],
+        states={
+            BROADCAST_MSG: [MessageHandler(filters.TEXT | filters.PHOTO | filters.Document.ALL, broadcast_receive_msg)],
+            BROADCAST_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_confirm)]
+        },
+        fallbacks=[CommandHandler('cancel', cancel_op)]
+    )
+    application.add_handler(broadcast_conv)
+    
+    # Delete stock conversation handler
+    deletestock_conv = ConversationHandler(
+        entry_points=[CommandHandler('deletestock', cmd_deletestock)],
+        states={
+            DEL_SELECT_PROD: [CallbackQueryHandler(deletestock_select_product, pattern="^delstock_")],
+            DEL_SELECT_VAR: [CallbackQueryHandler(deletestock_select_variant, pattern="^delstock_")],
+            DEL_INPUT_ITEMS: [MessageHandler(filters.TEXT & ~filters.COMMAND, deletestock_receive_item)]
+        },
+        fallbacks=[CommandHandler('cancel', cancel_op), CommandHandler('done', deletestock_receive_item)]
+    )
+    application.add_handler(deletestock_conv)
+    
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CommandHandler('admin', cmd_admin_menu))
     application.add_handler(CommandHandler('addpd', cmd_add_product_easy))
     application.add_handler(CommandHandler('setbanner_welcome', cmd_set_banner_welcome))
     application.add_handler(CommandHandler('setbanner_products', cmd_set_banner_products))
-    application.add_handler(CommandHandler('broadcast', cmd_broadcast))
+    application.add_handler(CommandHandler('datastock', cmd_datastock))
+    application.add_handler(CommandHandler('transaction', cmd_transaction))
     application.add_handler(CommandHandler('tutorial', cmd_tutorial))
     application.add_handler(CommandHandler('stock', show_stock_report))
     application.add_handler(CommandHandler('help', show_help))

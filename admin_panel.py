@@ -5,6 +5,41 @@ import json
 import os
 from datetime import datetime
 import hashlib
+from api_client import APIClient
+import requests
+
+# API Configuration
+try:
+    from admin_config import USE_API, API_URL, API_KEY
+except:
+    USE_API = False
+    API_URL = "http://localhost:5000"
+    API_KEY = "your-secret-api-key-change-this"
+
+def api_request(method, endpoint, data=None):
+    """Make API request to VPS"""
+    if not USE_API:
+        return None
+    
+    headers = {'X-API-Key': API_KEY, 'Content-Type': 'application/json'}
+    url = f"{API_URL}{endpoint}"
+    
+    try:
+        if method == 'GET':
+            response = requests.get(url, headers=headers, timeout=10)
+        elif method == 'POST':
+            response = requests.post(url, headers=headers, json=data, timeout=10)
+        elif method == 'PUT':
+            response = requests.put(url, headers=headers, json=data, timeout=10)
+        elif method == 'DELETE':
+            response = requests.delete(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            return response.json()
+        return None
+    except:
+        return None
+
 
 app = Flask(__name__)
 app.secret_key = "change-this-secret-key-in-production"
@@ -37,14 +72,15 @@ def verify_admin():
         return json.load(f)
 
 def load_products():
+    if USE_API:
+        result = api_request('GET', '/api/products')
+        return result if result else {}
     if not os.path.exists(PRODUCTS_FILE):
         return {}
     with open(PRODUCTS_FILE, 'r') as f:
         return json.load(f)
 
-def save_products(data):
-    with open(PRODUCTS_FILE, 'w') as f:
-        json.dump(data, f, indent=2)
+def save_products(data):`n    return APIClient.save_products(data)
 
 def load_users():
     if not os.path.exists(USERS_FILE):
@@ -360,6 +396,9 @@ if __name__ == '__main__':
     print("  CHANGE PASSWORD AFTER LOGIN!")
     print("="*50)
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), debug=False)
+
+
+
 
 
 

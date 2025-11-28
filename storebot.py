@@ -48,116 +48,16 @@ if not BAKONG_TOKEN and not BAKONG_PROXY_URL:
     print("⚠️ WARNING: Neither BAKONG_TOKEN nor BAKONG_PROXY_URL is set!")
     print("Payment verification will not work properly.")
 
-# --- DATABASE SETUP (PostgreSQL or Local JSON fallback) ---
-USE_POSTGRESQL = os.getenv("USE_POSTGRESQL", "false").lower() == "true"
-POSTGRESQL_URI = os.getenv("POSTGRESQL_URI", "")
-
-if USE_POSTGRESQL and POSTGRESQL_URI:
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-    import psycopg2.pool
+# --- DATABASE SETUP (Simple JSON files) ---
+DB_FOLDER = "database"
+if not os.path.exists(DB_FOLDER):
+    os.makedirs(DB_FOLDER)
     
-    try:
-        # Create connection pool
-        pg_pool = psycopg2.pool.SimpleConnectionPool(
-            1, 10,
-            POSTGRESQL_URI
-        )
-        
-        # Initialize database tables
-        conn = pg_pool.getconn()
-        cur = conn.cursor()
-        
-        # Products table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS products (
-                id VARCHAR(10) PRIMARY KEY,
-                name VARCHAR(255) NOT NULL,
-                description TEXT,
-                sold INTEGER DEFAULT 0
-            )
-        """)
-        
-        # Variants table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS variants (
-                product_id VARCHAR(10),
-                variant_id VARCHAR(10),
-                name VARCHAR(255) NOT NULL,
-                price DECIMAL(10, 2) NOT NULL,
-                tutorial TEXT,
-                PRIMARY KEY (product_id, variant_id),
-                FOREIGN KEY (product_id) REFERENCES products(id) ON DELETE CASCADE
-            )
-        """)
-        
-        # Stock table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS stock (
-                id SERIAL PRIMARY KEY,
-                product_id VARCHAR(10),
-                variant_id VARCHAR(10),
-                account_data TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (product_id, variant_id) REFERENCES variants(product_id, variant_id) ON DELETE CASCADE
-            )
-        """)
-        
-        # Users table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id BIGINT PRIMARY KEY,
-                username VARCHAR(255),
-                spent DECIMAL(10, 2) DEFAULT 0,
-                joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        
-        # Config table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS config (
-                key VARCHAR(50) PRIMARY KEY,
-                value TEXT
-            )
-        """)
-        
-        conn.commit()
-        cur.close()
-        pg_pool.putconn(conn)
-        
-        print("[OK] Connected to PostgreSQL")
-    except Exception as e:
-        print(f"[ERROR] PostgreSQL connection failed: {e}")
-        print("[FALLBACK] Using local file storage")
-        USE_POSTGRESQL = False
-        pg_pool = None
-else:
-    pg_pool = None
-    USE_POSTGRESQL = False
+PRODUCTS_FILE = f"{DB_FOLDER}/products.json"
+CONFIG_FILE = f"{DB_FOLDER}/config.json"
+USERS_FILE = f"{DB_FOLDER}/users.json"
 
-# Local file storage fallback
-if not USE_POSTGRESQL:
-    USE_MONGODB = os.getenv("USE_MONGODB", "false").lower() == "true"
-    MONGODB_URI = os.getenv("MONGODB_URI", "")
-
-    if USE_MONGODB and MONGODB_URI:
-        from pymongo import MongoClient
-        mongo_client = MongoClient(MONGODB_URI)
-        db = mongo_client['telegram_store_bot']
-        products_collection = db['products']
-        config_collection = db['config']
-        users_collection = db['users']
-        print("[OK] Connected to MongoDB")
-    else:
-        # Local file storage fallback
-        DB_FOLDER = "database"
-        if not os.path.exists(DB_FOLDER):
-            os.makedirs(DB_FOLDER)
-        PRODUCTS_FILE = f"{DB_FOLDER}/products.json"
-        CONFIG_FILE = f"{DB_FOLDER}/config.json"
-        USERS_FILE = f"{DB_FOLDER}/users.json"
-        products_collection = None
-        print("[OK] Using local file storage")
+print("[OK] Using local JSON file storage")
 
 TEMPLATE_FILE = "template.png" # Keep in root folder for easy access
 
@@ -191,49 +91,6 @@ if BAKONG_PROXY_URL:
 # --- 1. DATA MANAGERS ---
 
 def load_products():
-    if USE_POSTGRESQL and pg_pool:
-        try:
-            conn = pg_pool.getconn()
-            cur = conn.cursor(cursor_factory=RealDictCursor)
-            
-            # Get all products with variants
-            cur.execute("SELECT * FROM products ORDER BY id")
-            products = cur.fetchall()
-            
-            result = {}
-            for prod in products:
-                pid = prod['id']
-                result[pid] = {
-                    "name": prod['name'],
-                    "desc": prod['description'],
-                    "sold": prod['sold'],
-                    "variants": {}
-                }
-                
-                # Get variants for this product
-                cur.execute(
-                    "SELECT * FROM variants WHERE product_id = %s",
-                    (pid,)
-                )
-                variants = cur.fetchall()
-                
-                for var in variants:
-                    vid = var['variant_id']
-                    result[pid]['variants'][vid] = {
-                        "name": var['name'],
-                        "price": float(var['price']),
-                        "tutorial": var['tutorial']
-                    }
-            
-            cur.close()
-            pg_pool.putconn(conn)
-            return result
-            
-        except Exception as e:
-            logging.error(f"PostgreSQL load_products error: {e}")
-            return {}
-    
-    # Fallback to local file storage
     try:
         if not os.path.exists(PRODUCTS_FILE):
             data = {
@@ -261,45 +118,11 @@ def load_products():
         return {}
 
 def save_products(data):
-    if USE_POSTGRESQL and pg_pool:
-        try:
-            conn = pg_pool.getconn()
-            cur = conn.cursor()
-            
-            for pid, prod in data.items():
-                # Upsert product
-                cur.execute("""
-                    INSERT INTO products (id, name, description, sold)
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (id) DO UPDATE SET
-                        name = EXCLUDED.name,
-                        description = EXCLUDED.description,
-                        sold = EXCLUDED.sold
-                """, (pid, prod['name'], prod['desc'], prod.get('sold', 0)))
-                
-                # Delete old variants
-                cur.execute("DELETE FROM variants WHERE product_id = %s", (pid,))
-                
-                # Insert variants
-                for vid, var in prod.get('variants', {}).items():
-                    cur.execute("""
-                        INSERT INTO variants (product_id, variant_id, name, price, tutorial)
-                        VALUES (%s, %s, %s, %s, %s)
-                    """, (pid, vid, var['name'], var['price'], var.get('tutorial')))
-            
-            conn.commit()
-            cur.close()
-            pg_pool.putconn(conn)
-            
-        except Exception as e:
-            logging.error(f"PostgreSQL save_products error: {e}")
-    else:
-        # Fallback to local file
-        try:
-            with open(PRODUCTS_FILE, 'w') as f:
-                json.dump(data, f, indent=2)
-        except Exception as e:
-            logging.error(f"Error saving products: {e}")
+    try:
+        with open(PRODUCTS_FILE, 'w') as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logging.error(f"Error saving products: {e}")
 
 def get_config(key):
     defaults = {
@@ -408,23 +231,6 @@ def get_stock_file(pid, vid):
     return f"{DB_FOLDER}/stock_{pid}_{safe_vid}.txt"
 
 def get_stock_count(pid, vid):
-    if USE_POSTGRESQL and pg_pool:
-        try:
-            conn = pg_pool.getconn()
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT COUNT(*) FROM stock WHERE product_id = %s AND variant_id = %s",
-                (pid, vid)
-            )
-            count = cur.fetchone()[0]
-            cur.close()
-            pg_pool.putconn(conn)
-            return count
-        except Exception as e:
-            logging.error(f"PostgreSQL get_stock_count error: {e}")
-            return 0
-    
-    # Fallback to local file
     try:
         filename = get_stock_file(pid, vid)
         if not os.path.exists(filename): return 0
@@ -436,27 +242,12 @@ def get_stock_count(pid, vid):
         return 0
 
 def add_stock(pid, vid, content):
-    if USE_POSTGRESQL and pg_pool:
-        try:
-            conn = pg_pool.getconn()
-            cur = conn.cursor()
-            cur.execute(
-                "INSERT INTO stock (product_id, variant_id, account_data) VALUES (%s, %s, %s)",
-                (pid, vid, content)
-            )
-            conn.commit()
-            cur.close()
-            pg_pool.putconn(conn)
-        except Exception as e:
-            logging.error(f"PostgreSQL add_stock error: {e}")
-    else:
-        # Fallback to local file
-        try:
-            filename = get_stock_file(pid, vid)
-            with open(filename, "a") as f:
-                f.write(f"{content}\n")
-        except Exception as e:
-            logging.error(f"Error adding stock: {e}")
+    try:
+        filename = get_stock_file(pid, vid)
+        with open(filename, "a") as f:
+            f.write(f"{content}\n")
+    except Exception as e:
+        logging.error(f"Error adding stock: {e}")
 
 def clear_stock(pid, vid):
     filename = get_stock_file(pid, vid)
@@ -464,49 +255,6 @@ def clear_stock(pid, vid):
         os.remove(filename)
 
 def get_accounts(pid, vid, qty):
-    if USE_POSTGRESQL and pg_pool:
-        try:
-            conn = pg_pool.getconn()
-            cur = conn.cursor(cursor_factory=RealDictCursor)
-            
-            # Get accounts
-            cur.execute("""
-                SELECT id, account_data FROM stock 
-                WHERE product_id = %s AND variant_id = %s 
-                ORDER BY created_at
-                LIMIT %s
-            """, (pid, vid, qty))
-            
-            rows = cur.fetchall()
-            
-            if len(rows) < qty:
-                cur.close()
-                pg_pool.putconn(conn)
-                logging.warning(f"[GET ACCOUNTS] Not enough stock. Need {qty}, have {len(rows)}")
-                return None
-            
-            # Extract account data
-            accounts = [row['account_data'] for row in rows]
-            ids = [row['id'] for row in rows]
-            
-            # Delete delivered accounts
-            cur.execute(
-                "DELETE FROM stock WHERE id = ANY(%s)",
-                (ids,)
-            )
-            
-            conn.commit()
-            cur.close()
-            pg_pool.putconn(conn)
-            
-            logging.info(f"[GET ACCOUNTS] Successfully returned {len(accounts)} accounts")
-            return accounts
-            
-        except Exception as e:
-            logging.error(f"[GET ACCOUNTS] PostgreSQL error: {e}")
-            return None
-    
-    # Fallback to local file
     try:
         filename = get_stock_file(pid, vid)
         logging.info(f"[GET ACCOUNTS] Looking for stock file: {filename}")

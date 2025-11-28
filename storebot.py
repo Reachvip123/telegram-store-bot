@@ -1207,12 +1207,20 @@ async def cmd_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     await update.message.reply_text(
         "🛠 **ADMIN MENU**\n\n"
+        "**Product Management:**\n"
         "`/addpd Name | Var | Price | Desc`\n"
         "`/addstock` (Interactive)\n"
-        "`/tutorial` - Set tutorial links\n"
+        "`/tutorial` - Set tutorial links\n\n"
+        "**Database & Stock:**\n"
+        "`/viewstock` - View all stock\n"
+        "`/viewproducts` - View all products\n"
+        "`/viewusers` - View all customers\n"
+        "`/backup` - Backup database\n\n"
+        "**Settings:**\n"
         "`/setbanner_welcome URL`\n"
         "`/setbanner_products URL`\n"
-        "`/broadcast Msg`\n"
+        "`/broadcast Msg`\n\n"
+        "**Testing:**\n"
         "`/testkhqr` - Test KHQR generation\n"
         "`/forceconfirm <pid> <vid> <qty>` - Force delivery", 
         parse_mode='Markdown'
@@ -1274,6 +1282,133 @@ async def cmd_test_khqr(update: Update, context: ContextTypes.DEFAULT_TYPE):
         os.remove(filename)
     except:
         pass
+
+async def cmd_view_stock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """View all stock across all products"""
+    if update.effective_user.id != ADMIN_ID: return
+    
+    products = load_products()
+    msg = "📦 **STOCK OVERVIEW**\n\n"
+    total_items = 0
+    
+    for pid in sorted(products.keys(), key=lambda x: int(x)):
+        p = products[pid]
+        msg += f"**[{pid}] {p['name']}**\n"
+        for vid, v in p['variants'].items():
+            count = get_stock_count(pid, vid)
+            total_items += count
+            icon = "✅" if count > 0 else "❌"
+            msg += f"  {icon} {v['name']}: `{count}` items\n"
+            
+            # Show tutorial status
+            if v.get('tutorial'):
+                msg += f"     📚 Tutorial: Set\n"
+        msg += "\n"
+    
+    msg += f"**Total Stock:** {total_items} items across all products"
+    
+    await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def cmd_view_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """View all products with details"""
+    if update.effective_user.id != ADMIN_ID: return
+    
+    products = load_products()
+    msg = "🛍 **PRODUCT DATABASE**\n\n"
+    
+    for pid in sorted(products.keys(), key=lambda x: int(x)):
+        p = products[pid]
+        msg += f"**[{pid}] {p['name']}**\n"
+        msg += f"Description: {p['desc']}\n"
+        msg += f"Sold: {p.get('sold', 0)} pcs\n"
+        msg += f"Variants:\n"
+        for vid, v in p['variants'].items():
+            msg += f"  • {v['name']} - ${v['price']:.2f}\n"
+            if v.get('tutorial'):
+                msg += f"    📚 {v['tutorial']}\n"
+        msg += "\n"
+    
+    # Send as file if too long
+    if len(msg) > 4000:
+        with open('products_export.txt', 'w', encoding='utf-8') as f:
+            f.write(msg)
+        await update.message.reply_document(
+            document=open('products_export.txt', 'rb'),
+            filename='products.txt',
+            caption="📄 Product list (too long for message)"
+        )
+        os.remove('products_export.txt')
+    else:
+        await update.message.reply_text(msg, parse_mode='Markdown')
+
+async def cmd_view_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """View all users/customers"""
+    if update.effective_user.id != ADMIN_ID: return
+    
+    try:
+        if not os.path.exists(USERS_FILE):
+            await update.message.reply_text("No users found yet.")
+            return
+        
+        with open(USERS_FILE, 'r') as f:
+            users = json.load(f)
+        
+        msg = "👥 **CUSTOMER DATABASE**\n\n"
+        msg += f"Total Customers: {len(users)}\n\n"
+        
+        # Sort by spending
+        sorted_users = sorted(users.items(), key=lambda x: x[1].get('spent', 0), reverse=True)
+        
+        for uid, data in sorted_users[:20]:  # Show top 20
+            username = data.get('username', 'Unknown')
+            spent = data.get('spent', 0)
+            joined = data.get('joined', 'N/A')[:10]
+            msg += f"• @{username}\n"
+            msg += f"  ID: `{uid}`\n"
+            msg += f"  Spent: ${spent:.2f}\n"
+            msg += f"  Joined: {joined}\n\n"
+        
+        if len(users) > 20:
+            msg += f"\n_Showing top 20 of {len(users)} customers_"
+        
+        # Calculate total revenue
+        total_revenue = sum(u.get('spent', 0) for u in users.values())
+        msg += f"\n\n💰 **Total Revenue:** ${total_revenue:.2f}"
+        
+        await update.message.reply_text(msg, parse_mode='Markdown')
+        
+    except Exception as e:
+        await update.message.reply_text(f"Error viewing users: {e}")
+
+async def cmd_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Create and send database backup"""
+    if update.effective_user.id != ADMIN_ID: return
+    
+    await update.message.reply_text("🔄 Creating backup...")
+    
+    try:
+        import tarfile
+        from datetime import datetime
+        
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_name = f"backup_{timestamp}.tar.gz"
+        
+        # Create tar.gz backup
+        with tarfile.open(backup_name, "w:gz") as tar:
+            tar.add(DB_FOLDER, arcname="database")
+        
+        # Send backup file
+        await update.message.reply_document(
+            document=open(backup_name, 'rb'),
+            filename=backup_name,
+            caption=f"✅ Database backup created\n{timestamp}\n\nDownload and store safely!"
+        )
+        
+        # Cleanup
+        os.remove(backup_name)
+        
+    except Exception as e:
+        await update.message.reply_text(f"❌ Backup failed: {e}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -1368,6 +1503,10 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler('help', show_help))
     application.add_handler(CommandHandler('forceconfirm', cmd_forceconfirm))
     application.add_handler(CommandHandler('testkhqr', cmd_test_khqr))
+    application.add_handler(CommandHandler('viewstock', cmd_view_stock))
+    application.add_handler(CommandHandler('viewproducts', cmd_view_products))
+    application.add_handler(CommandHandler('viewusers', cmd_view_users))
+    application.add_handler(CommandHandler('backup', cmd_backup))
     application.add_handler(CallbackQueryHandler(button_click))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     

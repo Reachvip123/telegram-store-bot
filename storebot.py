@@ -81,14 +81,17 @@ logging.basicConfig(level=logging.INFO)
 
 # Initialize KHQR properly
 khqr = None
-if BAKONG_TOKEN and not BAKONG_PROXY_URL:
+if BAKONG_TOKEN:
     try:
         khqr = KHQR(BAKONG_TOKEN)
-        logging.info("[OK] KHQR Direct mode initialized (WARNING: Requires Cambodia IP)")
+        logging.info("[OK] KHQR Direct mode initialized successfully")
+        print("[OK] KHQR initialized with Bakong token")
     except Exception as e:
         logging.error(f"[ERROR] Failed to initialize KHQR: {e}")
-        logging.warning("[WARNING] If you're outside Cambodia, use BAKONG_PROXY_URL instead")
+        print(f"[ERROR] KHQR initialization failed: {e}")
         khqr = None
+else:
+    print("[WARNING] No BAKONG_TOKEN found - KHQR will not work")
 
 # If a proxy URL is provided, we'll use HTTP requests to talk to it
 if BAKONG_PROXY_URL:

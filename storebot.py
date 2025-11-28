@@ -582,7 +582,7 @@ async def check_payment_loop(update, context, md5_hash, qr_msg_id, pid, vid, qty
                         logging.error(f"[PAYMENT SUCCESS] Failed to notify admin: {e}")
 
                 try:
-                    await context.bot.send_message(chat_id, text, parse_mode='Markdown', disable_web_page_preview=True)
+                    await context.bot.send_message(chat_id, text, parse_mode='Markdown', disable_web_page_preview=False)
                     logging.info(f"[PAYMENT SUCCESS] Confirmation message sent to user")
                 except Exception as e:
                     logging.error(f"[PAYMENT SUCCESS] Failed to send confirmation: {e}")
@@ -718,7 +718,7 @@ async def cmd_forceconfirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         await update.message.reply_text("Forced delivery complete. Sending confirmation...")
-        await context.bot.send_message(chat_id, text, parse_mode='Markdown', disable_web_page_preview=True)
+        await context.bot.send_message(chat_id, text, parse_mode='Markdown', disable_web_page_preview=False)
         logging.info(f"[FORCECONFIRM] Delivered {qty} items for product {pid} variant {vid} to chat {chat_id}")
     except Exception as e:
         logging.error(f"[FORCECONFIRM] Error: {e}")
@@ -1473,25 +1473,23 @@ async def cmd_tutorial(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_set_banner_welcome(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
-    try:
-        if not context.args:
-            await update.message.reply_text("⚠️ Usage: `/setbanner_welcome <image_url>`", parse_mode='Markdown')
-            return
-        update_config("banner_welcome", context.args[0])
-        await update.message.reply_text("✅ Welcome Banner Updated!")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+    await update.message.reply_text(
+        "📸 **Set Welcome Banner**\n\n"
+        "Send me a photo to use as welcome banner.\n\n"
+        "The photo will be shown when users start the bot.",
+        parse_mode='Markdown'
+    )
+    context.user_data['awaiting_banner'] = 'welcome'
 
 async def cmd_set_banner_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
-    try:
-        if not context.args:
-            await update.message.reply_text("⚠️ Usage: `/setbanner_products <image_url>`", parse_mode='Markdown')
-            return
-        update_config("banner_products", context.args[0])
-        await update.message.reply_text("✅ Products Banner Updated!")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+    await update.message.reply_text(
+        "📸 **Set Products Banner**\n\n"
+        "Send me a photo to use as products list banner.\n\n"
+        "The photo will be shown when users view product list.",
+        parse_mode='Markdown'
+    )
+    context.user_data['awaiting_banner'] = 'products'
 
 async def cmd_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
@@ -1507,9 +1505,9 @@ async def cmd_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "`/viewusers` - View all customers\n"
         "`/backup` - Backup database\n\n"
         "**Settings:**\n"
-        "`/setbanner_welcome URL`\n"
-        "`/setbanner_products URL`\n"
-        "`/broadcast Msg`\n\n"
+        "`/setbanner_welcome` - Set welcome banner (send photo)\n"
+        "`/setbanner_products` - Set products banner (send photo)\n"
+        "`/broadcast` - Broadcast message\n\n"
         "**Testing:**\n"
         "`/testkhqr` - Test KHQR generation\n"
         "`/forceconfirm <pid> <vid> <qty>` - Force delivery", 
@@ -1729,7 +1727,26 @@ async def cmd_backup(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Backup failed: {e}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Handle photo uploads for banners
+    if update.message.photo and update.effective_user.id == ADMIN_ID:
+        banner_type = context.user_data.get('awaiting_banner')
+        if banner_type:
+            photo = update.message.photo[-1]
+            file_id = photo.file_id
+            
+            if banner_type == 'welcome':
+                update_config('banner_welcome', file_id)
+                await update.message.reply_text("✅ Welcome banner updated successfully!")
+            elif banner_type == 'products':
+                update_config('banner_products', file_id)
+                await update.message.reply_text("✅ Products banner updated successfully!")
+            
+            context.user_data.pop('awaiting_banner', None)
+            return
+    
     text = update.message.text
+    if not text:
+        return
 
     # Admin flow: awaiting tutorial link for selected variant
     if update.effective_user.id == ADMIN_ID and context.user_data.get('tutorial_pid'):
@@ -1741,9 +1758,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Product or variant not found.")
             return
         
+        # Allow removing tutorial
+        if link.lower() in ['none', 'remove', 'delete', 'clear']:
+            products[pid]['variants'][vid]['tutorial'] = None
+            save_products(products)
+            await update.message.reply_text("✅ Tutorial link removed!")
+            return
+        
         # Validate URL
         if not link.startswith('http://') and not link.startswith('https://'):
-            await update.message.reply_text("❌ Invalid URL. Must start with http:// or https://")
+            await update.message.reply_text(
+                "❌ Invalid URL. Must start with http:// or https://\n\n"
+                "💡 Send 'none' to remove tutorial link.",
+                parse_mode='Markdown'
+            )
             context.user_data['tutorial_pid'] = pid
             context.user_data['tutorial_vid'] = vid
             return
@@ -1851,7 +1879,7 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler('viewusers', cmd_view_users))
     application.add_handler(CommandHandler('backup', cmd_backup))
     application.add_handler(CallbackQueryHandler(button_click))
-    application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+    application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & (~filters.COMMAND), handle_message))
     
     print("[OK] Store Bot Final V33 Running...")
     application.run_polling()

@@ -1,4 +1,5 @@
-﻿from flask import Flask, render_template, request, jsonify, redirect, url_for, session, flash
+import os
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session, flash
 from functools import wraps
 import json
 import os
@@ -352,4 +353,5 @@ if __name__ == '__main__':
     print(" Password: admin123")
     print("  CHANGE PASSWORD AFTER LOGIN!")
     print("="*50)
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), debug=False)
+

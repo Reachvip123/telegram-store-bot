@@ -1,0 +1,59 @@
+# ========================================
+# COMMANDS TO RUN ON CAMBODIA VPS
+# Copy and paste these one by one
+# ========================================
+
+# Step 1: Create bot directory
+mkdir -p /root/telegram-store-bot
+cd /root/telegram-store-bot
+
+# Step 2: Install Python and required packages
+apt update
+apt install -y python3 python3-pip
+pip3 install python-telegram-bot pymongo python-dotenv requests
+
+# Step 3: Create .env file with your config
+cat > .env << 'EOF'
+BOT_TOKEN=8197112968:AAFGBGjBRFmJzSe-UEKww3DJsFF9woa1wtY
+BAKONG_TOKEN=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJkYXRhIjp7ImlkIjoiZDBmMzk2NTAzMTcyNGE3NiJ9LCJpYXQiOjE3NjQxNjM4NDYsImV4cCI6MTc3MTkzOTg0Nn0.xrFGRwFstiyjzDwoe2g_F4bJAUdn7oUrQnH5ns8WZCU
+ADMIN_ID=7948968436
+ADMIN_USERNAME=@dzy4u2
+BAKONG_ACCOUNT=vorn_sovannareach@wing
+MERCHANT_NAME=SOVANNAREACH VORN
+USE_MONGODB=true
+MONGODB_URI=mongodb+srv://dztsorebase:reachvip@cluster0.tbyhuzf.mongodb.net/telegram_store_bot?retryWrites=true&w=majority&appName=Cluster0
+ADMIN_PASSWORD=admin123
+SECRET_KEY=cambodia-vps-2024
+EOF
+
+# Step 4: You're ready! Now we need to upload storebot.py
+# Exit VPS and upload from Windows
+exit
+
+# ========================================
+# AFTER EXITING VPS, RUN THIS ON WINDOWS:
+# ========================================
+# Open PowerShell on Windows and run:
+
+scp storebot.py root@157.10.73.90:/root/telegram-store-bot/
+
+# ========================================
+# THEN GO BACK TO VPS:
+# ========================================
+
+ssh root@157.10.73.90
+
+# Go to bot directory
+cd /root/telegram-store-bot
+
+# Start bot in background
+nohup python3 storebot.py > bot.log 2>&1 &
+
+# Check if running
+ps aux | grep storebot.py
+
+# View logs
+tail -f bot.log
+
+# Press Ctrl+C to stop viewing logs
+# Bot will keep running in background

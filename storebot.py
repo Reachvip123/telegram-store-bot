@@ -60,10 +60,16 @@ SELECT_PROD, SELECT_VAR, INPUT_STOCK = range(3)
 # ==========================================
 
 logging.basicConfig(level=logging.INFO)
-try:
-    khqr = KHQR(BAKONG_TOKEN) if BAKONG_TOKEN and not BAKONG_PROXY_URL else None
-except Exception:
-    khqr = None
+
+# Initialize KHQR properly
+khqr = None
+if BAKONG_TOKEN:
+    try:
+        khqr = KHQR(BAKONG_TOKEN)
+        logging.info("[OK] KHQR initialized successfully")
+    except Exception as e:
+        logging.error(f"[ERROR] Failed to initialize KHQR: {e}")
+        khqr = None
 
 # If a proxy URL is provided, we'll use HTTP requests to talk to it
 if BAKONG_PROXY_URL:
@@ -406,22 +412,37 @@ async def check_payment_loop(update, context, md5_hash, qr_msg_id, pid, vid, qty
     logging.info(f"[PAYMENT CHECK] Started for md5={md5_hash}, qr_msg_id={qr_msg_id}, product={pid}, variant={vid}, qty={qty}")
 
     for attempt in range(120):  # Check for 10 minutes (120 * 5 seconds)
+        await asyncio.sleep(5)  # Wait 5 seconds before checking
+        
         try:
-            if khqr:
-                response = await loop.run_in_executor(None, safe_check_payment, md5_hash)
-                logging.info(f"[PAYMENT CHECK] Attempt {attempt+1}: Response = {response}")
-                is_paid = False
-                if str(response).strip().upper() == "PAID": 
-                    is_paid = True
-                    logging.info(f"[PAYMENT CHECK] Payment detected as PAID")
-                elif isinstance(response, dict) and response.get('responseCode') == 0: 
-                    is_paid = True
-                    logging.info(f"[PAYMENT CHECK] Payment confirmed via responseCode=0")
-            else:
-                # Testing mode - auto confirm after 5 seconds
-                await asyncio.sleep(5)
+            # Check if KHQR is available (not in testing mode)
+            if not khqr and not BAKONG_PROXY_URL:
+                logging.error(f"[PAYMENT CHECK] KHQR not initialized! Cannot verify payment. MD5={md5_hash}")
+                try:
+                    await context.bot.edit_message_caption(
+                        chat_id, qr_msg_id, 
+                        caption="[ERROR] Payment system not configured properly. Please contact admin."
+                    )
+                except:
+                    pass
+                return
+            
+            # Verify payment through KHQR or Proxy
+            response = await loop.run_in_executor(None, safe_check_payment, md5_hash)
+            logging.info(f"[PAYMENT CHECK] Attempt {attempt+1}/120: Response = {response}")
+            
+            is_paid = False
+            
+            # Check response format
+            if str(response).strip().upper() == "PAID": 
                 is_paid = True
-                logging.info(f"[PAYMENT CHECK] Testing mode - auto confirming payment")
+                logging.info(f"[PAYMENT CHECK] Payment detected as PAID (string response)")
+            elif isinstance(response, dict) and response.get('responseCode') == 0: 
+                is_paid = True
+                logging.info(f"[PAYMENT CHECK] Payment confirmed via responseCode=0 (dict response)")
+            elif isinstance(response, dict) and response.get('data', {}).get('responseCode') == 0:
+                is_paid = True
+                logging.info(f"[PAYMENT CHECK] Payment confirmed via data.responseCode=0")
 
             if is_paid:
                 logging.info(f"[PAYMENT SUCCESS] Processing confirmed payment")
@@ -512,14 +533,17 @@ async def check_payment_loop(update, context, md5_hash, qr_msg_id, pid, vid, qty
                         logging.error(f"[PAYMENT SUCCESS] Failed to send even with fallback: {e2}")
                 return
         except Exception as e:
-            logging.error(f"[PAYMENT CHECK] Error in loop: {e}")
-        await asyncio.sleep(5)
+            logging.error(f"[PAYMENT CHECK] Error in loop iteration {attempt+1}: {e}")
 
+    # Timeout - no payment received
     try: 
-        await context.bot.edit_message_caption(chat_id, qr_msg_id, caption="[EXPIRED] Payment check timeout.")
-        logging.warning(f"[PAYMENT TIMEOUT] No payment received after 10 minutes")
-    except: 
-        pass
+        await context.bot.edit_message_caption(
+            chat_id, qr_msg_id, 
+            caption="[EXPIRED] Payment timeout after 10 minutes.\n\nNo payment was detected. Please try again or contact admin if you already paid."
+        )
+        logging.warning(f"[PAYMENT TIMEOUT] No payment received after 10 minutes for MD5={md5_hash}")
+    except Exception as e:
+        logging.error(f"[PAYMENT TIMEOUT] Failed to update timeout message: {e}")
 
 # --- 4. UI HANDLERS ---
 
@@ -636,6 +660,17 @@ async def cmd_forceconfirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"Error forcing confirm: {e}")
         except:
             pass
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    user_data = get_user_data(user.id)
+    
+    now = datetime.now().strftime("%A, %d %B %Y %H:%M:%S")
+    sold = get_total_sold()
+    total_users = get_total_users()
+    
+    raw_welcome = get_config("welcome")
+    
     if raw_welcome == "default":
          welcome_text = (
             f"Hello {user.first_name} 👋🏼\n"
@@ -1035,6 +1070,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "📦 Check Stock": await show_stock_report(update, context)
 
 if __name__ == '__main__':
+    # Validate KHQR configuration at startup
+    if not khqr and not BAKONG_PROXY_URL:
+        print("\n" + "="*60)
+        print("⚠️  WARNING: KHQR NOT CONFIGURED!")
+        print("="*60)
+        print("Payment verification will NOT work.")
+        print("Please set BAKONG_TOKEN in your .env file")
+        print("or configure BAKONG_PROXY_URL for proxy-based payment.")
+        print("="*60 + "\n")
+    elif khqr:
+        print("[OK] KHQR Direct mode enabled")
+    elif BAKONG_PROXY_URL:
+        print(f"[OK] KHQR Proxy mode enabled: {BAKONG_PROXY_URL}")
+    
     load_products()
     
     # Build application with proper error handling

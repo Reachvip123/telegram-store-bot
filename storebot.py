@@ -1731,6 +1731,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message:
         return
     
+    # Get text from message
+    text = update.message.text if update.message.text else ""
+    if not text:
+        return
+    
+    logging.info(f"[HANDLE_MESSAGE] Received text: '{text}' from user: {update.effective_user.id}")
+    
     # Handle photo uploads for banners
     if update.message.photo and update.effective_user.id == ADMIN_ID:
         banner_type = context.user_data.get('awaiting_banner')
@@ -1796,11 +1803,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Regular user actions
-    if text == "🛍 List Products": await show_products(update, context)
-    elif text == "👤 My Profile": await start(update, context)
-    elif text == "🛠 Admin Panel": await cmd_admin_menu(update, context)
-    elif text == "❓ Help": await show_help(update, context)
-    elif text == "📦 Check Stock": await show_stock_report(update, context)
+    logging.info(f"[HANDLE_MESSAGE] Checking keyboard actions for: '{text}'")
+    if text == "🛍 List Products": 
+        logging.info("[HANDLE_MESSAGE] Matched: List Products")
+        await show_products(update, context)
+    elif text == "👤 My Profile": 
+        logging.info("[HANDLE_MESSAGE] Matched: My Profile")
+        await start(update, context)
+    elif text == "🛠 Admin Panel": 
+        logging.info("[HANDLE_MESSAGE] Matched: Admin Panel")
+        await cmd_admin_menu(update, context)
+    elif text == "❓ Help": 
+        logging.info("[HANDLE_MESSAGE] Matched: Help")
+        await show_help(update, context)
+    elif text == "📦 Check Stock": 
+        logging.info("[HANDLE_MESSAGE] Matched: Check Stock")
+        await show_stock_report(update, context)
+    else:
+        logging.info(f"[HANDLE_MESSAGE] No match found for: '{text}'")
 
 if __name__ == '__main__':
     # Validate KHQR configuration at startup
@@ -1883,6 +1903,8 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler('viewproducts', cmd_view_products))
     application.add_handler(CommandHandler('viewusers', cmd_view_users))
     application.add_handler(CommandHandler('backup', cmd_backup))
+    
+    # Add callback and message handlers AFTER commands
     application.add_handler(CallbackQueryHandler(button_click))
     application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO) & (~filters.COMMAND), handle_message))
     

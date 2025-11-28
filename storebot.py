@@ -27,8 +27,13 @@ ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "@dzy4u2")
 BAKONG_PROXY_URL = os.getenv("BAKONG_PROXY_URL", "")  # optional proxy endpoint hosted in Cambodia
 
 # Validate required tokens
-if not BOT_TOKEN or not BAKONG_TOKEN:
-    raise ValueError("BOT_TOKEN and BAKONG_TOKEN must be set in environment variables!")
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN must be set in environment variables!")
+
+# BAKONG_TOKEN is optional if using proxy
+if not BAKONG_TOKEN and not BAKONG_PROXY_URL:
+    print("⚠️ WARNING: Neither BAKONG_TOKEN nor BAKONG_PROXY_URL is set!")
+    print("Payment verification will not work properly.")
 
 # --- DATABASE SETUP (Local JSON fallback or MongoDB) ---
 USE_MONGODB = os.getenv("USE_MONGODB", "false").lower() == "true"
@@ -317,32 +322,38 @@ def generate_qr_data(amount):
         try:
             payload = {"amount": amount, "bank_account": BAKONG_ACCOUNT, "merchant_name": MERCHANT_NAME}
             resp = requests.post(f"{BAKONG_PROXY_URL.rstrip('/')}/create_qr", json=payload, timeout=15)
+            resp.raise_for_status()
             data = resp.json()
             logging.info(f"[KHQR GENERATED] Official Bakong KHQR via Proxy - Amount: ${amount}")
             return data.get("qr_code"), data.get("md5")
         except Exception as e:
             logging.error(f"[PROXY QR] Error calling proxy create_qr: {e}")
+            return None, None
 
-    if khqr:
-        # Generate official Bakong KHQR code
-        qr_code = khqr.create_qr(
-            bank_account=BAKONG_ACCOUNT, 
-            merchant_name=MERCHANT_NAME, 
-            merchant_city="PP",
-            amount=amount, 
-            currency="USD", 
-            store_label="Store", 
-            phone_number="85512345678",
-            bill_number=f"INV-{int(amount*1000)}", 
-            terminal_label="Bot01"
-        )
-        md5 = khqr.generate_md5(qr_code)
-        logging.info(f"[KHQR GENERATED] Official Bakong KHQR - Amount: ${amount}, MD5: {md5}")
-        return qr_code, md5
+    if khqr and BAKONG_TOKEN:
+        try:
+            # Generate official Bakong KHQR code
+            qr_code = khqr.create_qr(
+                bank_account=BAKONG_ACCOUNT, 
+                merchant_name=MERCHANT_NAME, 
+                merchant_city="Phnom Penh",
+                amount=amount, 
+                currency="USD", 
+                store_label="TelegramStore", 
+                phone_number="85512345678",
+                bill_number=f"INV{datetime.now().strftime('%Y%m%d%H%M%S')}", 
+                terminal_label="TeleBot"
+            )
+            md5 = khqr.generate_md5(qr_code)
+            logging.info(f"[KHQR GENERATED] Official Bakong KHQR - Amount: ${amount}, MD5: {md5}")
+            return qr_code, md5
+        except Exception as e:
+            logging.error(f"[KHQR ERROR] Failed to generate KHQR: {e}")
+            return None, None
 
-    # Fallback - should not be used in production
-    logging.warning(f"[QR FALLBACK] Using test URL - NOT a real Bakong KHQR!")
-    return f"https://bakong.nbc.gov.kh/pay?amount={amount}", "test_md5_hash"
+    # No valid KHQR method available
+    logging.error(f"[QR FAILED] No valid KHQR configuration available!")
+    return None, None
 
 def create_styled_qr(qr_data, amount):
     """Create Bakong KHQR image with official green color"""
@@ -899,6 +910,33 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await query.message.reply_text(f"⏳ Generating Bakong KHQR code...")
         qr_text, md5 = generate_qr_data(total)
+        
+        # Check if QR generation failed
+        if not qr_text or not md5:
+            error_msg = (
+                "❌ **Payment System Error**\n\n"
+                "Unable to generate KHQR payment code.\n"
+                "This usually means:\n"
+                "• BAKONG_TOKEN is not configured\n"
+                "• BAKONG_PROXY_URL is not working\n\n"
+                f"Please contact admin: {ADMIN_USERNAME}"
+            )
+            await query.message.reply_text(error_msg, parse_mode='Markdown')
+            
+            # Notify admin
+            try:
+                await context.bot.send_message(
+                    ADMIN_ID, 
+                    f"⚠️ KHQR Generation Failed!\n"
+                    f"User: {query.from_user.id}\n"
+                    f"Product: {prod['name']}\n"
+                    f"Amount: ${total}\n\n"
+                    f"Check BAKONG_TOKEN or BAKONG_PROXY_URL configuration!"
+                )
+            except:
+                pass
+            return
+        
         filename = create_styled_qr(qr_text, total)
         markup = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel Transaction", callback_data="cancel")]])
         
@@ -1085,7 +1123,74 @@ async def cmd_set_banner_products(update: Update, context: ContextTypes.DEFAULT_
 
 async def cmd_admin_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
-    await update.message.reply_text("🛠 **ADMIN MENU**\n\n`/addpd Name | Var | Price | Desc`\n`/addstock` (Interactive)\n`/setbanner_welcome URL`\n`/setbanner_products URL`\n`/broadcast Msg`", parse_mode='Markdown')
+    await update.message.reply_text(
+        "🛠 **ADMIN MENU**\n\n"
+        "`/addpd Name | Var | Price | Desc`\n"
+        "`/addstock` (Interactive)\n"
+        "`/setbanner_welcome URL`\n"
+        "`/setbanner_products URL`\n"
+        "`/broadcast Msg`\n"
+        "`/testkhqr` - Test KHQR generation\n"
+        "`/forceconfirm <pid> <vid> <qty>` - Force delivery", 
+        parse_mode='Markdown'
+    )
+
+async def cmd_test_khqr(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Test KHQR generation to verify configuration"""
+    if update.effective_user.id != ADMIN_ID: return
+    
+    await update.message.reply_text("🧪 Testing KHQR generation...")
+    
+    # Test with $0.01
+    test_amount = 0.01
+    qr_text, md5 = generate_qr_data(test_amount)
+    
+    if not qr_text or not md5:
+        error_msg = (
+            "❌ **KHQR Test FAILED**\n\n"
+            "**Configuration Issues:**\n"
+        )
+        
+        if not BAKONG_TOKEN and not BAKONG_PROXY_URL:
+            error_msg += "• No BAKONG_TOKEN set\n• No BAKONG_PROXY_URL set\n"
+        elif BAKONG_TOKEN and not khqr:
+            error_msg += "• BAKONG_TOKEN is set but KHQR failed to initialize\n"
+        elif BAKONG_PROXY_URL:
+            error_msg += f"• BAKONG_PROXY_URL is set but not responding: {BAKONG_PROXY_URL}\n"
+        
+        error_msg += "\n**Required:**\n"
+        error_msg += "Set either:\n"
+        error_msg += "1. `BAKONG_TOKEN` (requires Cambodia IP)\n"
+        error_msg += "2. `BAKONG_PROXY_URL` (for non-Cambodia deployment)"
+        
+        await update.message.reply_text(error_msg, parse_mode='Markdown')
+        return
+    
+    # Success - generate QR image
+    filename = create_styled_qr(qr_text, test_amount)
+    
+    success_msg = (
+        "✅ **KHQR Test SUCCESSFUL**\n\n"
+        f"**Configuration:**\n"
+        f"• Account: `{BAKONG_ACCOUNT}`\n"
+        f"• Merchant: `{MERCHANT_NAME}`\n"
+        f"• Amount: ${test_amount}\n"
+        f"• MD5: `{md5[:16]}...`\n\n"
+        f"**Mode:** {'Proxy' if BAKONG_PROXY_URL else 'Direct'}\n\n"
+        "Try scanning this test QR with your banking app!"
+    )
+    
+    await update.message.reply_photo(
+        photo=open(filename, 'rb'),
+        caption=success_msg,
+        parse_mode='Markdown'
+    )
+    
+    # Cleanup
+    try:
+        os.remove(filename)
+    except:
+        pass
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -1177,6 +1282,7 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler('stock', show_stock_report))
     application.add_handler(CommandHandler('help', show_help))
     application.add_handler(CommandHandler('forceconfirm', cmd_forceconfirm))
+    application.add_handler(CommandHandler('testkhqr', cmd_test_khqr))
     application.add_handler(CallbackQueryHandler(button_click))
     application.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     

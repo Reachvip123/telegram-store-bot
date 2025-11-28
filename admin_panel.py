@@ -119,6 +119,11 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
+
+@app.route('/health')
+def health():
+    return 'OK', 200
+
 @app.route('/')
 @login_required
 def index():
@@ -354,4 +359,5 @@ if __name__ == '__main__':
     print("  CHANGE PASSWORD AFTER LOGIN!")
     print("="*50)
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)), debug=False)
+
 

@@ -24,6 +24,7 @@ BAKONG_ACCOUNT = os.getenv("BAKONG_ACCOUNT", "vorn_sovannareach@wing")
 MERCHANT_NAME = os.getenv("MERCHANT_NAME", "SOVANNAREACH VORN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7948968436"))
 ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "@dzy4u2")
+BAKONG_PROXY_URL = os.getenv("BAKONG_PROXY_URL", "")  # optional proxy endpoint hosted in Cambodia
 
 # Validate required tokens
 if not BOT_TOKEN or not BAKONG_TOKEN:
@@ -60,9 +61,16 @@ SELECT_PROD, SELECT_VAR, INPUT_STOCK = range(3)
 
 logging.basicConfig(level=logging.INFO)
 try:
-    khqr = KHQR(BAKONG_TOKEN) 
-except:
-    khqr = None 
+    khqr = KHQR(BAKONG_TOKEN) if BAKONG_TOKEN and not BAKONG_PROXY_URL else None
+except Exception:
+    khqr = None
+
+# If a proxy URL is provided, we'll use HTTP requests to talk to it
+if BAKONG_PROXY_URL:
+    try:
+        import requests
+    except Exception:
+        requests = None
 
 # --- 1. DATA MANAGERS ---
 
@@ -296,6 +304,16 @@ def reindex_products():
 
 # --- 2. QR GENERATOR ---
 def generate_qr_data(amount):
+    # If a proxy is configured (must be hosted in Cambodia), use it to create QR
+    if BAKONG_PROXY_URL and requests:
+        try:
+            payload = {"amount": amount, "bank_account": BAKONG_ACCOUNT, "merchant_name": MERCHANT_NAME}
+            resp = requests.post(f"{BAKONG_PROXY_URL.rstrip('/')}/create_qr", json=payload, timeout=15)
+            data = resp.json()
+            return data.get("qr_code"), data.get("md5")
+        except Exception as e:
+            logging.error(f"[PROXY QR] Error calling proxy create_qr: {e}")
+
     if khqr:
         qr_code = khqr.create_qr(
             bank_account=BAKONG_ACCOUNT, merchant_name=MERCHANT_NAME, merchant_city="PP",
@@ -304,7 +322,8 @@ def generate_qr_data(amount):
         )
         md5 = khqr.generate_md5(qr_code)
         return qr_code, md5
-    
+
+    # Fallback test url
     return f"https://bakong.nbc.gov.kh/pay?amount={amount}", "test_md5_hash"
 
 def create_styled_qr(qr_data, amount):
@@ -353,8 +372,18 @@ def create_styled_qr(qr_data, amount):
         return fname
 
 def safe_check_payment(md5):
+    # If proxy is configured, ask proxy to check payment (proxy should be in Cambodia)
+    if BAKONG_PROXY_URL and requests:
+        try:
+            resp = requests.get(f"{BAKONG_PROXY_URL.rstrip('/')}/check/{md5}", timeout=15)
+            data = resp.json()
+            logging.info(f"[PROXY KHQR CHECK] MD5={md5}, Result={data}")
+            return data
+        except Exception as e:
+            logging.error(f"[PROXY KHQR CHECK] Error querying proxy for MD5={md5}: {e}")
+
     if khqr:
-        try: 
+        try:
             result = khqr.check_payment(md5)
             logging.info(f"[KHQR CHECK] MD5={md5}, Result={result}")
             return result

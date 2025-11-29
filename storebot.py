@@ -163,7 +163,7 @@ def update_config(key, value):
     except Exception as e:
         logging.error(f"Error updating config: {e}")
 
-def get_user_data(user_id):
+def get_user_data(user_id, username=None):
     try:
         users = {}
         if os.path.exists(USERS_FILE):
@@ -175,13 +175,21 @@ def get_user_data(user_id):
         
         uid = str(user_id)
         if uid not in users:
-            users[uid] = {"username": "Unknown", "spent": 0.0, "joined": str(datetime.now())}
+            users[uid] = {"username": username or "Unknown", "spent": 0.0, "joined": str(datetime.now())}
             with open(USERS_FILE, 'w') as f:
                 json.dump(users, f, indent=2)
+            logging.info(f"[USER REGISTERED] New user: {uid} (@{username})")
+        else:
+            # Update username if provided and different
+            if username and users[uid].get('username') != username:
+                users[uid]['username'] = username
+                with open(USERS_FILE, 'w') as f:
+                    json.dump(users, f, indent=2)
+                logging.info(f"[USER UPDATED] Username updated for {uid}: @{username}")
         return users[uid]
     except Exception as e:
         logging.error(f"Error getting user data: {e}")
-        return {"username": "Unknown", "spent": 0.0, "joined": str(datetime.now())}
+        return {"username": username or "Unknown", "spent": 0.0, "joined": str(datetime.now())}
 
 def update_user_spent(user_id, amount, username):
     try:
@@ -521,7 +529,8 @@ async def check_payment_loop(update, context, md5_hash, qr_msg_id, pid, vid, qty
 
                 if accounts:
                     logging.info(f"[PAYMENT SUCCESS] Processing {len(accounts)} accounts")
-                    update_user_spent(chat_id, total, update.effective_user.username)
+                    username = update.effective_user.username if update.effective_user.username else f"user_{chat_id}"
+                    update_user_spent(chat_id, total, username)
                     if pid in products:
                         products[pid]['sold'] = products[pid].get('sold', 0) + qty
                         save_products(products)
@@ -608,17 +617,6 @@ async def check_payment_loop(update, context, md5_hash, qr_msg_id, pid, vid, qty
 
 # --- 4. UI HANDLERS ---
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_data = get_user_data(user.id)
-    
-    now = datetime.now().strftime("%A, %d %B %Y %H:%M:%S")
-    sold = get_total_sold()
-    total_users = get_total_users()
-    
-    raw_welcome = get_config("welcome")
-
-
 async def cmd_forceconfirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin command: force delivery for testing.
     Usage: /forceconfirm <pid> <vid> <qty>
@@ -667,7 +665,8 @@ async def cmd_forceconfirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Update spending and product sold
         chat_id = update.effective_chat.id
         total = var.get('price', 0) * qty
-        update_user_spent(chat_id, total, update.effective_user.username)
+        username = update.effective_user.username if update.effective_user.username else f"user_{chat_id}"
+        update_user_spent(chat_id, total, username)
         products[pid]['sold'] = products[pid].get('sold', 0) + qty
         save_products(products)
 
@@ -729,7 +728,8 @@ async def cmd_forceconfirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    user_data = get_user_data(user.id)
+    username = user.username if user.username else f"user_{user.id}"
+    user_data = get_user_data(user.id, username)
     
     now = datetime.now().strftime("%A, %d %B %Y %H:%M:%S")
     sold = get_total_sold()
@@ -743,7 +743,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"{now}\n\n"
             "**User Info :**\n"
             f"└ ID : `{user.id}`\n"
-            f"└ Username : @{user.username}\n"
+            f"└ Username : @{username}\n"
             f"└ Transactions : ${user_data['spent']:.2f}\n\n"
             "**BOT Stats :**\n"
             f"└ Sold : {sold:,} pcs\n"
@@ -768,6 +768,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(welcome_text, reply_markup=markup, parse_mode='Markdown')
 
 async def show_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Register user if not already registered
+    user = update.effective_user
+    username = user.username if user.username else f"user_{user.id}"
+    get_user_data(user.id, username)
+    
     products = load_products()
     list_text = "╭ - - - - - - - - - - - - - - - - - - - ╮\n┊  **PRODUCT LIST**\n┊  _page 1 / 1_\n┊- - - - - - - - - - - - - - - - - - - - -\n"
     keyboard = []; row = []
@@ -810,6 +815,11 @@ async def button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer() 
     callback_data = query.data
     logging.info(f"Button clicked: {callback_data}")
+    
+    # Register user on any interaction
+    user = update.effective_user
+    username = user.username if user.username else f"user_{user.id}"
+    get_user_data(user.id, username)
     
     if callback_data.startswith("stock"): 
         logging.info("Stock action detected, returning")
@@ -1730,6 +1740,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Safety check
     if not update.message:
         return
+    
+    # Register user on any interaction
+    user = update.effective_user
+    username = user.username if user.username else f"user_{user.id}"
+    get_user_data(user.id, username)
     
     # Get text from message
     text = update.message.text if update.message.text else ""
